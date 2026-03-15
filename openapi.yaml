@@ -1,0 +1,1077 @@
+openapi: 3.1.0
+info:
+  title: Pipeline AI DevOps Platform API
+  version: 1.0.0
+  description: |
+    AI DevOps automation platform for deploying applications to Vercel and Render.
+    Provides sandboxed workspace execution via Daytona, AI-powered repository analysis,
+    and automated deployment orchestration.
+  contact:
+    name: Pipeline Support
+    email: support@pipeline.dev
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development server
+  - url: https://api.pipeline.dev/api/v1
+    description: Production server
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ==================== REPOSITORIES ====================
+  /repos/connect:
+    post:
+      summary: Connect a Git repository
+      description: Connect a Git repository from GitHub or GitLab to the platform
+      tags: [Repositories]
+      operationId: connectRepo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RepoConnectionRequest'
+      responses:
+        '200':
+          description: Repository connected successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepoConnection'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /repos/{repo_id}/analyze:
+    post:
+      summary: Analyze repository structure
+      description: |
+        Creates a Daytona workspace, clones the repository, and runs AI analysis
+        to detect frameworks, services, and recommend deployment platforms.
+      tags: [Repositories]
+      operationId: analyzeRepo
+      parameters:
+        - name: repo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Analysis completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepoAnalysis'
+        '404':
+          description: Repository not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /repos/{repo_id}:
+    get:
+      summary: Get repository details
+      tags: [Repositories]
+      operationId: getRepo
+      parameters:
+        - name: repo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Repository details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepoConnection'
+        '404':
+          description: Repository not found
+
+  # ==================== DEPLOYMENTS ====================
+  /deployments:
+    get:
+      summary: List all deployments
+      tags: [Deployments]
+      operationId: listDeployments
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, running, succeeded, failed, cancelled]
+        - name: repo_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of deployments
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentList'
+
+    post:
+      summary: Create deployment plan
+      description: Create a new deployment plan based on repository analysis
+      tags: [Deployments]
+      operationId: createDeployment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeploymentCreateRequest'
+      responses:
+        '201':
+          description: Deployment created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentPlan'
+        '400':
+          description: Invalid request
+
+  /deployments/{deployment_id}:
+    get:
+      summary: Get deployment status
+      tags: [Deployments]
+      operationId: getDeployment
+      parameters:
+        - name: deployment_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Deployment details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentStatus'
+        '404':
+          description: Deployment not found
+
+  /deployments/{deployment_id}/run:
+    post:
+      summary: Execute deployment
+      description: |
+        Execute the deployment in a Daytona sandbox. This will:
+        1. Start the sandbox
+        2. Run build commands
+        3. Deploy services to Vercel/Render
+        4. Track deployment status
+      tags: [Deployments]
+      operationId: runDeployment
+      parameters:
+        - name: deployment_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: Deployment execution started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentExecutionResponse'
+        '400':
+          description: Deployment not in runnable state
+
+  /deployments/{deployment_id}/cancel:
+    post:
+      summary: Cancel deployment
+      tags: [Deployments]
+      operationId: cancelDeployment
+      parameters:
+        - name: deployment_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Deployment cancelled
+
+  /deployments/{deployment_id}/logs:
+    get:
+      summary: Get deployment logs
+      description: Retrieve logs from the Daytona sandbox for this deployment
+      tags: [Deployments]
+      operationId: getDeploymentLogs
+      parameters:
+        - name: deployment_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tail
+          in: query
+          description: Number of log lines to return from the end
+          schema:
+            type: integer
+            default: 100
+        - name: since
+          in: query
+          description: Return logs since this timestamp (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Deployment logs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentLogs'
+
+  /deployments/{deployment_id}/retry:
+    post:
+      summary: Retry failed deployment
+      tags: [Deployments]
+      operationId: retryDeployment
+      parameters:
+        - name: deployment_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: Deployment retry initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentExecutionResponse'
+
+  # ==================== SANDBOXES ====================
+  /sandboxes:
+    get:
+      summary: List all sandboxes
+      tags: [Sandboxes]
+      operationId: listSandboxes
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [creating, running, stopped, error, destroyed]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of sandboxes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxList'
+
+    post:
+      summary: Create sandbox
+      description: Create a new Daytona workspace for isolated execution
+      tags: [Sandboxes]
+      operationId: createSandbox
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SandboxCreateRequest'
+      responses:
+        '201':
+          description: Sandbox created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+
+  /sandboxes/{sandbox_id}:
+    get:
+      summary: Get sandbox details
+      tags: [Sandboxes]
+      operationId: getSandbox
+      parameters:
+        - name: sandbox_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Sandbox details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
+
+    delete:
+      summary: Destroy sandbox
+      description: Destroy the Daytona workspace and free resources
+      tags: [Sandboxes]
+      operationId: destroySandbox
+      parameters:
+        - name: sandbox_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Sandbox destroyed
+
+  /sandboxes/{sandbox_id}/start:
+    post:
+      summary: Start sandbox
+      tags: [Sandboxes]
+      operationId: startSandbox
+      parameters:
+        - name: sandbox_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Sandbox started
+
+  /sandboxes/{sandbox_id}/stop:
+    post:
+      summary: Stop sandbox
+      tags: [Sandboxes]
+      operationId: stopSandbox
+      parameters:
+        - name: sandbox_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Sandbox stopped
+
+  /sandboxes/{sandbox_id}/execute:
+    post:
+      summary: Execute command in sandbox
+      description: Run a command inside the Daytona workspace
+      tags: [Sandboxes]
+      operationId: executeCommand
+      parameters:
+        - name: sandbox_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommandExecuteRequest'
+      responses:
+        '200':
+          description: Command executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandExecuteResponse'
+
+  /sandboxes/{sandbox_id}/terminal:
+    post:
+      summary: Open terminal session
+      description: Open an interactive terminal session inside the sandbox
+      tags: [Sandboxes]
+      operationId: openTerminal
+      parameters:
+        - name: sandbox_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TerminalSessionRequest'
+      responses:
+        '201':
+          description: Terminal session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalSession'
+
+  /sandboxes/{sandbox_id}/logs:
+    get:
+      summary: Get sandbox logs
+      description: Retrieve execution logs from the sandbox
+      tags: [Sandboxes]
+      operationId: getSandboxLogs
+      parameters:
+        - name: sandbox_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tail
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: Sandbox logs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SandboxLogs'
+
+  # ==================== HEALTH ====================
+  /health:
+    get:
+      summary: Health check
+      tags: [System]
+      operationId: healthCheck
+      responses:
+        '200':
+          description: System healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # ==================== REPOSITORY SCHEMAS ====================
+    RepoConnectionRequest:
+      type: object
+      required: [repo_url, provider]
+      properties:
+        repo_url:
+          type: string
+          format: uri
+          description: Full URL to the Git repository
+          example: https://github.com/user/my-monorepo
+        provider:
+          type: string
+          enum: [github, gitlab]
+          description: Git provider
+          example: github
+        branch:
+          type: string
+          description: Default branch to use
+          default: main
+          example: main
+        name:
+          type: string
+          description: Optional custom name for the repository
+          example: my-monorepo
+
+    RepoConnection:
+      type: object
+      required: [id, repo_url, provider, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for the connected repository
+        repo_url:
+          type: string
+          format: uri
+        provider:
+          type: string
+          enum: [github, gitlab]
+        branch:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [pending, connected, analyzing, error]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    DetectedService:
+      type: object
+      required: [name, framework, path]
+      properties:
+        name:
+          type: string
+          description: Service name (e.g., frontend, api, backend)
+          example: frontend
+        framework:
+          type: string
+          description: Detected framework
+          example: nextjs
+          enum: [nextjs, react, vue, angular, svelte, nuxtjs, remix, fastapi, flask, django, express, nestjs, go, rust, unknown]
+        path:
+          type: string
+          description: Relative path within the repository
+          example: frontend/
+        language:
+          type: string
+          description: Primary programming language
+          example: typescript
+          enum: [javascript, typescript, python, go, rust, java, ruby, php, unknown]
+        recommended_platform:
+          type: string
+          enum: [vercel, render, docker]
+          description: Recommended deployment platform
+        detected_files:
+          type: array
+          items:
+            type: string
+          description: Key files that helped identify the service
+          example: [package.json, next.config.js]
+        build_command:
+          type: string
+          description: Detected or suggested build command
+          example: npm run build
+        start_command:
+          type: string
+          description: Detected or suggested start command
+          example: npm start
+        env_variables:
+          type: array
+          items:
+            type: string
+          description: Detected environment variable requirements
+
+    RepoAnalysis:
+      type: object
+      required: [repo_id, services, is_monorepo, analyzed_at]
+      properties:
+        repo_id:
+          type: string
+          format: uuid
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/DetectedService'
+        is_monorepo:
+          type: boolean
+          description: Whether the repository is a monorepo
+        detected_workspaces:
+          type: array
+          items:
+            type: string
+          description: Workspace tools detected (e.g., turborepo, nx, pnpm)
+        root_config:
+          type: object
+          description: Root-level configuration files
+        analyzed_at:
+          type: string
+          format: date-time
+        sandbox_id:
+          type: string
+          format: uuid
+          description: ID of the sandbox used for analysis
+
+    # ==================== DEPLOYMENT SCHEMAS ====================
+    DeploymentCreateRequest:
+      type: object
+      required: [repo_id, services]
+      properties:
+        repo_id:
+          type: string
+          format: uuid
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceDeploymentConfig'
+        environment:
+          type: string
+          enum: [development, staging, production]
+          default: production
+        branch:
+          type: string
+          description: Branch to deploy from
+        env_variables:
+          type: object
+          additionalProperties:
+            type: string
+          description: Environment variables for all services
+
+    ServiceDeploymentConfig:
+      type: object
+      required: [name, path, platform]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        platform:
+          type: string
+          enum: [vercel, render, docker]
+        build_command:
+          type: string
+        start_command:
+          type: string
+        output_directory:
+          type: string
+        env_variables:
+          type: object
+          additionalProperties:
+            type: string
+        vercel_config:
+          $ref: '#/components/schemas/VercelDeploymentConfig'
+        render_config:
+          $ref: '#/components/schemas/RenderDeploymentConfig'
+
+    VercelDeploymentConfig:
+      type: object
+      properties:
+        project_name:
+          type: string
+          description: Vercel project name
+        team_id:
+          type: string
+        framework:
+          type: string
+
+    RenderDeploymentConfig:
+      type: object
+      properties:
+        service_name:
+          type: string
+        service_type:
+          type: string
+          enum: [web_service, static_site, background_worker, cron_job]
+        plan:
+          type: string
+          default: starter
+
+    DeploymentPlan:
+      type: object
+      required: [id, repo_id, status, services, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        repo_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, planned, approved]
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlannedService'
+        environment:
+          type: string
+        branch:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    PlannedService:
+      type: object
+      required: [name, path, platform]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        platform:
+          type: string
+          enum: [vercel, render, docker]
+        status:
+          type: string
+          enum: [pending, deploying, deployed, failed, skipped]
+        estimated_duration_seconds:
+          type: integer
+          description: Estimated deployment duration
+
+    DeploymentStatus:
+      type: object
+      required: [id, repo_id, status, services, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        repo_id:
+          type: string
+          format: uuid
+        sandbox_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, cancelled, retrying]
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceDeployment'
+        environment:
+          type: string
+        branch:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        duration_seconds:
+          type: integer
+        error_message:
+          type: string
+        retry_count:
+          type: integer
+          default: 0
+
+    ServiceDeployment:
+      type: object
+      required: [name, path, platform, status]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        platform:
+          type: string
+          enum: [vercel, render, docker]
+        status:
+          type: string
+          enum: [pending, building, deploying, deployed, failed, skipped]
+        build_logs_url:
+          type: string
+          format: uri
+        deployment_url:
+          type: string
+          format: uri
+        platform_deployment_id:
+          type: string
+          description: Deployment ID from the platform (Vercel/Render)
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        error_message:
+          type: string
+
+    DeploymentExecutionResponse:
+      type: object
+      required: [deployment_id, status, message]
+      properties:
+        deployment_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        message:
+          type: string
+        estimated_duration_seconds:
+          type: integer
+
+    DeploymentLogs:
+      type: object
+      required: [deployment_id, logs, timestamp]
+      properties:
+        deployment_id:
+          type: string
+          format: uuid
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/LogEntry'
+        timestamp:
+          type: string
+          format: date-time
+
+    DeploymentList:
+      type: object
+      required: [deployments, total, limit, offset]
+      properties:
+        deployments:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeploymentStatus'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    LogEntry:
+      type: object
+      required: [timestamp, level, message]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        level:
+          type: string
+          enum: [debug, info, warning, error, fatal]
+        message:
+          type: string
+        source:
+          type: string
+          description: Component that generated the log
+
+    # ==================== SANDBOX SCHEMAS ====================
+    SandboxCreateRequest:
+      type: object
+      properties:
+        repo_id:
+          type: string
+          format: uuid
+          description: Optional repo to pre-clone
+        repo_url:
+          type: string
+          format: uri
+        branch:
+          type: string
+          default: main
+        environment_variables:
+          type: object
+          additionalProperties:
+            type: string
+        resources:
+          $ref: '#/components/schemas/SandboxResources'
+
+    SandboxResources:
+      type: object
+      properties:
+        cpu_cores:
+          type: integer
+          default: 2
+        memory_mb:
+          type: integer
+          default: 4096
+        disk_gb:
+          type: integer
+          default: 20
+
+    Sandbox:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [creating, running, stopped, error, destroyed]
+        repo_id:
+          type: string
+          format: uuid
+        repo_url:
+          type: string
+          format: uri
+        branch:
+          type: string
+        workspace_url:
+          type: string
+          description: URL to access the Daytona workspace
+        resources:
+          $ref: '#/components/schemas/SandboxResources'
+        environment_variables:
+          type: object
+          additionalProperties:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        stopped_at:
+          type: string
+          format: date-time
+        destroyed_at:
+          type: string
+          format: date-time
+
+    SandboxList:
+      type: object
+      required: [sandboxes, total]
+      properties:
+        sandboxes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Sandbox'
+        total:
+          type: integer
+
+    CommandExecuteRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: string
+          example: npm install
+        working_directory:
+          type: string
+          default: /workspace
+        timeout_seconds:
+          type: integer
+          default: 300
+        env_variables:
+          type: object
+          additionalProperties:
+            type: string
+
+    CommandExecuteResponse:
+      type: object
+      required: [exit_code, stdout, stderr, duration_ms]
+      properties:
+        exit_code:
+          type: integer
+        stdout:
+          type: string
+        stderr:
+          type: string
+        duration_ms:
+          type: integer
+        executed_at:
+          type: string
+          format: date-time
+
+    TerminalSessionRequest:
+      type: object
+      properties:
+        shell:
+          type: string
+          default: /bin/bash
+        working_directory:
+          type: string
+          default: /workspace
+        environment_variables:
+          type: object
+          additionalProperties:
+            type: string
+
+    TerminalSession:
+      type: object
+      required: [session_id, sandbox_id, websocket_url, created_at]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        sandbox_id:
+          type: string
+          format: uuid
+        websocket_url:
+          type: string
+          format: uri
+          description: WebSocket URL for terminal connection
+        shell:
+          type: string
+        working_directory:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+
+    SandboxLogs:
+      type: object
+      required: [sandbox_id, logs]
+      properties:
+        sandbox_id:
+          type: string
+          format: uuid
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/LogEntry'
+
+    # ==================== ERROR SCHEMAS ====================
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Error code
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: object
+          description: Additional error details
+        request_id:
+          type: string
+          description: Request ID for debugging
+
+    # ==================== HEALTH SCHEMAS ====================
+    HealthResponse:
+      type: object
+      required: [status, timestamp, version]
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy, degraded]
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+        services:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [healthy, unhealthy]

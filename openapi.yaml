@@ -11,11 +11,9 @@ info:
     email: support@pipeline.dev
 
 servers:
-  - url: http://localhost:8000/api/v1
+  - url: https://pipeline-ai-labs-by-ahmad.up.railway.app/api/v1
     description: Local development server
-  - url: https://api.pipeline.dev/api/v1
-    description: Production server
-
+ 
 security:
   - BearerAuth: []
 

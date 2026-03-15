@@ -485,6 +485,115 @@ paths:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
 
+  # ==================== BILLING ====================
+  /billing/plans:
+    get:
+      summary: Get available subscription plans
+      tags: [Billing]
+      operationId: getPlans
+      responses:
+        '200':
+          description: List of available plans
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlansResponse'
+
+  /billing/checkout:
+    post:
+      summary: Create Stripe checkout session
+      tags: [Billing]
+      operationId: createCheckout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '200':
+          description: Checkout session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /billing/webhook:
+    post:
+      summary: Stripe webhook handler
+      tags: [Billing]
+      operationId: stripeWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Webhook processed
+
+  /billing/subscription/{user_id}:
+    get:
+      summary: Get user subscription status
+      tags: [Billing]
+      operationId: getSubscription
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Subscription details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+
+  /billing/cancel-subscription:
+    post:
+      summary: Cancel user subscription
+      tags: [Billing]
+      operationId: cancelSubscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelSubscriptionRequest'
+      responses:
+        '200':
+          description: Subscription cancelled
+        '400':
+          description: Invalid request
+
+  /billing/portal-session:
+    post:
+      summary: Create Stripe billing portal session
+      tags: [Billing]
+      operationId: createPortalSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortalSessionRequest'
+      responses:
+        '200':
+          description: Portal session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalSessionResponse'
+
 components:
   securitySchemes:
     BearerAuth:
@@ -1075,3 +1184,133 @@ components:
           additionalProperties:
             type: string
             enum: [healthy, unhealthy]
+
+    # ==================== BILLING SCHEMAS ====================
+    PlansResponse:
+      type: object
+      required: [plans]
+      properties:
+        plans:
+          type: array
+          items:
+            $ref: '#/components/schemas/Plan'
+
+    Plan:
+      type: object
+      required: [id, name, price, features]
+      properties:
+        id:
+          type: string
+          enum: [starter, pro, team]
+        name:
+          type: string
+        price:
+          type: integer
+          description: Monthly price in USD
+        price_id:
+          type: string
+          nullable: true
+        features:
+          type: array
+          items:
+            type: string
+        deployments_limit:
+          type: integer
+        projects_limit:
+          type: integer
+          description: -1 for unlimited
+        priority:
+          type: string
+          enum: [normal, high, priority]
+
+    CheckoutRequest:
+      type: object
+      required: [plan_id, user_id, success_url, cancel_url]
+      properties:
+        plan_id:
+          type: string
+          enum: [starter, pro, team]
+        user_id:
+          type: string
+        success_url:
+          type: string
+          format: uri
+        cancel_url:
+          type: string
+          format: uri
+
+    CheckoutResponse:
+      type: object
+      required: [checkout_url, session_id]
+      properties:
+        checkout_url:
+          type: string
+          format: uri
+        session_id:
+          type: string
+
+    Subscription:
+      type: object
+      required: [user_id, plan, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+        plan:
+          type: string
+          enum: [free, starter, pro, team]
+        status:
+          type: string
+          enum: [active, canceled, past_due, unpaid]
+        stripe_customer_id:
+          type: string
+          nullable: true
+        stripe_subscription_id:
+          type: string
+          nullable: true
+        current_period_start:
+          type: string
+          format: date-time
+          nullable: true
+        current_period_end:
+          type: string
+          format: date-time
+          nullable: true
+        cancel_at_period_end:
+          type: boolean
+        usage:
+          type: object
+          properties:
+            deployments:
+              type: integer
+            sandboxes:
+              type: integer
+            bandwidth:
+              type: integer
+
+    CancelSubscriptionRequest:
+      type: object
+      required: [subscription_id]
+      properties:
+        subscription_id:
+          type: string
+
+    PortalSessionRequest:
+      type: object
+      required: [customer_id, return_url]
+      properties:
+        customer_id:
+          type: string
+        return_url:
+          type: string
+          format: uri
+
+    PortalSessionResponse:
+      type: object
+      required: [portal_url]
+      properties:
+        portal_url:
+          type: string
+          format: uri

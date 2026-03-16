@@ -12,7 +12,7 @@ info:
 
 servers:
   - url: https://pipeline-ai-labs-by-ahmad.up.railway.app/api/v1
-    description: Local development server
+    description: Production server
  
 security:
   - BearerAuth: []
@@ -372,6 +372,15 @@ paths:
       responses:
         '200':
           description: Sandbox started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
 
   /sandboxes/{sandbox_id}/stop:
     post:
@@ -388,6 +397,15 @@ paths:
       responses:
         '200':
           description: Sandbox stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
 
   /sandboxes/{sandbox_id}/execute:
     post:
@@ -536,6 +554,13 @@ paths:
       responses:
         '200':
           description: Webhook processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received:
+                    type: boolean
 
   /billing/subscription/{user_id}:
     get:
@@ -570,6 +595,13 @@ paths:
       responses:
         '200':
           description: Subscription cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
         '400':
           description: Invalid request
 
@@ -1206,8 +1238,8 @@ components:
           type: integer
           description: Monthly price in USD
         price_id:
-          type: string
-          nullable: true
+          type: [string, 'null']
+          description: Stripe price ID (null for free plan)
         features:
           type: array
           items:
@@ -1263,19 +1295,15 @@ components:
           type: string
           enum: [active, canceled, past_due, unpaid]
         stripe_customer_id:
-          type: string
-          nullable: true
+          type: [string, 'null']
         stripe_subscription_id:
-          type: string
-          nullable: true
+          type: [string, 'null']
         current_period_start:
-          type: string
+          type: [string, 'null']
           format: date-time
-          nullable: true
         current_period_end:
-          type: string
+          type: [string, 'null']
           format: date-time
-          nullable: true
         cancel_at_period_end:
           type: boolean
         usage:

@@ -1,326 +1,328 @@
-"""
-Stripe Integration Routes
-Handles subscription checkout, webhooks, and subscription management
-"""
+# H:\pipeline\backend\api\billing.py
+
+import hmac
+import hashlib
+import httpx
 import os
-import stripe
-from fastapi import APIRouter, Request, HTTPException, Header
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from typing import Optional
-import logging
-from datetime import datetime
-from supabase import create_client, Client
+from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/billing", tags=["billing"])
+load_dotenv()
 
-# Stripe configuration
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+router = APIRouter(prefix="/billing", tags=["Billing"])
 
-# Supabase configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+POLAR_API = "https://api.polar.sh/v1"
+POLAR_TOKEN = os.getenv("POLAR_ACCESS_TOKEN", "")
+POLAR_WEBHOOK_SECRET = os.getenv("POLAR_WEBHOOK_SECRET", "")
 
-# Subscription plans configuration
-PLANS = {
-    "starter": {
-        "id": "starter",
-        "name": "Starter",
-        "price": 0,
-        "price_id": None,  # Free plan
-        "features": ["1 project", "1,000 deploys/month", "Community support"],
-        "deployments_limit": 1000,
-        "projects_limit": 1,
-        "priority": "normal"
-    },
-    "pro": {
-        "id": "pro",
-        "name": "Pro",
-        "price": 29,
-        "price_id": "price_pro_monthly",
-        "features": ["Unlimited projects", "50,000 deploys/month", "Priority support", "Custom domains"],
-        "deployments_limit": 50000,
-        "projects_limit": -1,
-        "priority": "high"
-    },
-    "team": {
-        "id": "team",
-        "name": "Team",
-        "price": 99,
-        "price_id": "price_team_monthly",
-        "features": ["Unlimited projects", "Unlimited deploys", "Dedicated support", "SSO", "Audit logs"],
-        "deployments_limit": -1,
-        "projects_limit": -1,
-        "priority": "priority"
-    }
+PRODUCT_MAP = {
+    "starter": os.getenv("POLAR_PRODUCT_ID_STARTER", ""),
+    "pro":     os.getenv("POLAR_PRODUCT_ID_PRO", ""),
+    "team":    os.getenv("POLAR_PRODUCT_ID_TEAM", ""),
 }
 
 
-def get_supabase_client() -> Client:
-    """Get Supabase client for database operations"""
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def polar_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {POLAR_TOKEN}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
 
 
-def get_plan_from_price_id(price_id: str) -> Optional[str]:
-    """Get plan ID from Stripe price ID"""
-    for plan_id, plan in PLANS.items():
-        if plan["price_id"] == price_id:
-            return plan_id
-    return None
+def product_to_plan(product_id: str) -> str:
+    for plan, pid in PRODUCT_MAP.items():
+        if pid == product_id:
+            return plan
+    return "free"
 
 
-class CheckoutRequest(BaseModel):
-    plan_id: str
-    user_id: str
-    email: str
-    success_url: str
-    cancel_url: str
+async def get_polar_customer_id(user_id: str) -> str | None:
+    """Look up Polar customer by your internal user_id (external_id)"""
+    async with httpx.AsyncClient() as client:
+        res = await client.get(
+            f"{POLAR_API}/customers",
+            headers=polar_headers(),
+            params={"external_id": user_id},
+        )
+    items = res.json().get("items", [])
+    return items[0]["id"] if items else None
 
+
+# ── GET /billing/plans ────────────────────────────────────────────────────────
 
 @router.get("/plans")
 async def get_plans():
-    """Get available subscription plans"""
     return {
         "plans": [
             {
-                "id": plan["id"],
-                "name": plan["name"],
-                "price": plan["price"],
-                "features": plan["features"]
-            }
-            for plan in PLANS.values()
+                "id": "starter",
+                "name": "Starter",
+                "price": 9,
+                "price_id": PRODUCT_MAP["starter"],
+                "features": [
+                    "5 deployments/month",
+                    "2 projects",
+                    "Community support",
+                ],
+                "deployments_limit": 5,
+                "projects_limit": 2,
+                "priority": "normal",
+            },
+            {
+                "id": "pro",
+                "name": "Pro",
+                "price": 29,
+                "price_id": PRODUCT_MAP["pro"],
+                "features": [
+                    "50 deployments/month",
+                    "10 projects",
+                    "Priority support",
+                ],
+                "deployments_limit": 50,
+                "projects_limit": 10,
+                "priority": "high",
+            },
+            {
+                "id": "team",
+                "name": "Team",
+                "price": 99,
+                "price_id": PRODUCT_MAP["team"],
+                "features": [
+                    "Unlimited deployments",
+                    "Unlimited projects",
+                    "Dedicated support",
+                ],
+                "deployments_limit": -1,
+                "projects_limit": -1,
+                "priority": "priority",
+            },
         ]
     }
 
 
+# ── POST /billing/checkout ────────────────────────────────────────────────────
+
+class CheckoutRequest(BaseModel):
+    plan_id: str
+    user_id: str
+    success_url: str
+    cancel_url: str
+
+
 @router.post("/checkout")
-async def create_checkout_session(request: CheckoutRequest):
-    """Create Stripe checkout session for subscription"""
-    try:
-        plan = PLANS.get(request.plan_id)
-        if not plan:
-            raise HTTPException(status_code=400, detail="Invalid plan ID")
-        
-        if plan["price_id"] is None:
-            raise HTTPException(status_code=400, detail="Cannot checkout for free plan")
-        
-        # Create Stripe checkout session
-        checkout_session = stripe.checkout.Session.create(
-            customer_email=request.email,
-            metadata={
-                "user_id": request.user_id,
-                "plan_id": request.plan_id
+async def create_checkout(req: CheckoutRequest):
+    product_id = PRODUCT_MAP.get(req.plan_id)
+    if not product_id:
+        raise HTTPException(status_code=400, detail=f"Invalid plan_id: {req.plan_id}")
+
+    async with httpx.AsyncClient() as client:
+        res = await client.post(
+            f"{POLAR_API}/checkouts",
+            headers=polar_headers(),
+            json={
+                "products": [product_id],
+                "success_url": req.success_url,
+                "external_customer_id": req.user_id,
+                "metadata": {
+                    "user_id": req.user_id,
+                    "plan_id": req.plan_id,
+                },
             },
-            line_items=[
-                {
-                    "price_data": {
-                        "currency": "usd",
-                        "product_data": {
-                            "name": f"Pipeline AI - {plan['name']} Plan",
-                            "description": f"Monthly subscription to {plan['name']} plan"
-                        },
-                        "unit_amount": plan["price"] * 100,  # Stripe uses cents
-                        "recurring": {"interval": "month"}
-                    },
-                    "quantity": 1
-                }
-            ],
-            mode="subscription",
-            success_url=request.success_url,
-            cancel_url=request.cancel_url
         )
-        
-        return {
-            "checkout_url": checkout_session.url,
-            "session_id": checkout_session.id
-        }
-    
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error creating checkout session: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to create checkout session")
 
-
-@router.post("/webhook")
-async def stripe_webhook(request: Request):
-    """Handle Stripe webhook events for subscription management with database updates"""
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-    
-    try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, STRIPE_WEBHOOK_SECRET
+    if res.status_code != 201:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Polar checkout error: {res.json()}",
         )
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError:
-        raise HTTPException(status_code=400, detail="Invalid signature")
-    
-    # Get Supabase client
-    supabase = get_supabase_client()
-    
-    # Handle the event
-    event_type = event["type"]
-    
-    if event_type == "checkout.session.completed":
-        session = event["data"]["object"]
-        
-        # Get metadata
-        user_id = session.get("metadata", {}).get("user_id")
-        plan_id = session.get("metadata", {}).get("plan_id")
-        customer_id = session.get("customer")
-        subscription_id = session.get("subscription")
-        
-        logger.info(f"Checkout completed for user {user_id}, plan {plan_id}")
-        
-        if user_id and plan_id:
-            # Update subscription in database
-            subscription_data = {
-                "user_id": user_id,
-                "plan": plan_id,
-                "status": "active",
-                "stripe_customer_id": customer_id,
-                "stripe_subscription_id": subscription_id,
-                "updated_at": datetime.utcnow().isoformat()
-            }
-            
-            try:
-                # Upsert subscription (insert or update)
-                result = supabase.table("subscriptions").upsert(
-                    subscription_data,
-                    on_conflict="user_id"
-                ).execute()
-                logger.info(f"Subscription updated for user {user_id}: {result}")
-            except Exception as e:
-                logger.error(f"Failed to update subscription: {str(e)}")
-        
-    elif event_type == "customer.subscription.updated":
-        subscription = event["data"]["object"]
-        subscription_id = subscription.get("id")
-        status = subscription.get("status")
-        
-        logger.info(f"Subscription {subscription_id} updated to status: {status}")
-        
-        # Update subscription status in database
-        try:
-            result = supabase.table("subscriptions").update({
-                "status": status,
-                "current_period_start": datetime.fromtimestamp(subscription.get("current_period_start")).isoformat() if subscription.get("current_period_start") else None,
-                "current_period_end": datetime.fromtimestamp(subscription.get("current_period_end")).isoformat() if subscription.get("current_period_end") else None,
-                "cancel_at_period_end": subscription.get("cancel_at_period_end", False),
-                "updated_at": datetime.utcnow().isoformat()
-            }).eq("stripe_subscription_id", subscription_id).execute()
-            logger.info(f"Subscription status updated: {result}")
-        except Exception as e:
-            logger.error(f"Failed to update subscription status: {str(e)}")
-    
-    elif event_type == "customer.subscription.deleted":
-        subscription = event["data"]["object"]
-        subscription_id = subscription.get("id")
-        
-        logger.info(f"Subscription {subscription_id} cancelled")
-        
-        # Downgrade to free/starter plan
-        try:
-            result = supabase.table("subscriptions").update({
-                "plan": "starter",
-                "status": "canceled",
-                "stripe_subscription_id": None,
-                "updated_at": datetime.utcnow().isoformat()
-            }).eq("stripe_subscription_id", subscription_id).execute()
-            logger.info(f"Subscription downgraded to starter: {result}")
-        except Exception as e:
-            logger.error(f"Failed to downgrade subscription: {str(e)}")
-    
-    elif event_type == "invoice.payment_succeeded":
-        invoice = event["data"]["object"]
-        logger.info(f"Payment succeeded for invoice {invoice['id']}")
-        # Payment successful - subscription is active (handled by subscription.updated)
-        
-    elif event_type == "invoice.payment_failed":
-        invoice = event["data"]["object"]
-        subscription_id = invoice.get("subscription")
-        logger.warning(f"Payment failed for subscription {subscription_id}")
-        
-        # Mark subscription as past_due
-        try:
-            result = supabase.table("subscriptions").update({
-                "status": "past_due",
-                "updated_at": datetime.utcnow().isoformat()
-            }).eq("stripe_subscription_id", subscription_id).execute()
-            logger.info(f"Subscription marked as past_due: {result}")
-        except Exception as e:
-            logger.error(f"Failed to update subscription status: {str(e)}")
-    
-    else:
-        logger.info(f"Unhandled event type: {event_type}")
-    
-    return {"status": "success"}
 
+    data = res.json()
+    return {
+        "checkout_url": data["url"],
+        "session_id": data["id"],
+    }
+
+
+# ── GET /billing/subscription/{user_id} ──────────────────────────────────────
 
 @router.get("/subscription/{user_id}")
 async def get_subscription(user_id: str):
-    """Get user's current subscription status from Supabase"""
-    try:
-        supabase = get_supabase_client()
-        result = supabase.table("subscriptions").select("*").eq("user_id", user_id).single().execute()
-        
-        if result.data:
-            return result.data
-        else:
-            # Return default free subscription if none exists
-            return {
-                "user_id": user_id,
-                "plan": "starter",
-                "status": "active",
-                "current_period_end": None,
-                "cancel_at_period_end": False
-            }
-    except Exception as e:
-        logger.error(f"Failed to fetch subscription: {str(e)}")
-        # Return default on error
+    customer_id = await get_polar_customer_id(user_id)
+
+    if not customer_id:
         return {
             "user_id": user_id,
-            "plan": "starter",
+            "plan": "free",
             "status": "active",
+            "cancel_at_period_end": False,
+            "current_period_start": None,
             "current_period_end": None,
-            "cancel_at_period_end": False
+            "polar_subscription_id": None,
         }
+
+    async with httpx.AsyncClient() as client:
+        subs_res = await client.get(
+            f"{POLAR_API}/subscriptions",
+            headers=polar_headers(),
+            params={"customer_id": customer_id, "active": True},
+        )
+
+    subs = subs_res.json().get("items", [])
+
+    if not subs:
+        return {
+            "user_id": user_id,
+            "plan": "free",
+            "status": "active",
+            "cancel_at_period_end": False,
+            "current_period_start": None,
+            "current_period_end": None,
+            "polar_subscription_id": None,
+        }
+
+    sub = subs[0]
+    return {
+        "user_id": user_id,
+        "plan": product_to_plan(sub["product_id"]),
+        "status": sub["status"],
+        "cancel_at_period_end": sub.get("cancel_at_period_end", False),
+        "current_period_start": sub.get("current_period_start"),
+        "current_period_end": sub.get("current_period_end"),
+        "polar_subscription_id": sub["id"],
+    }
+
+
+# ── POST /billing/cancel-subscription ────────────────────────────────────────
+
+class CancelSubscriptionRequest(BaseModel):
+    subscription_id: str
 
 
 @router.post("/cancel-subscription")
-async def cancel_subscription(user_id: str, subscription_id: str):
-    """Cancel user's subscription at period end"""
-    try:
-        subscription = stripe.Subscription.modify(
-            subscription_id,
-            cancel_at_period_end=True
+async def cancel_subscription(req: CancelSubscriptionRequest):
+    async with httpx.AsyncClient() as client:
+        res = await client.delete(
+            f"{POLAR_API}/subscriptions/{req.subscription_id}",
+            headers=polar_headers(),
         )
-        
-        return {
-            "status": "success",
-            "cancel_at_period_end": subscription.cancel_at_period_end,
-            "current_period_end": subscription.current_period_end
-        }
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error cancelling subscription: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+
+    if res.status_code not in (200, 204):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to cancel subscription: {res.json()}",
+        )
+
+    return {"status": "canceled"}
+
+
+# ── POST /billing/portal-session ─────────────────────────────────────────────
+
+class PortalSessionRequest(BaseModel):
+    user_id: str
+    return_url: str
 
 
 @router.post("/portal-session")
-async def create_portal_session(customer_id: str, return_url: str):
-    """Create Stripe customer portal session for managing subscription"""
-    try:
-        session = stripe.billing_portal.Session.create(
-            customer=customer_id,
-            return_url=return_url
+async def create_portal_session(req: PortalSessionRequest):
+    customer_id = await get_polar_customer_id(req.user_id)
+
+    if not customer_id:
+        raise HTTPException(
+            status_code=404,
+            detail="No Polar customer found for this user. "
+                   "They may not have subscribed yet.",
         )
-        
-        return {"portal_url": session.url}
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error creating portal: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+
+    async with httpx.AsyncClient() as client:
+        session_res = await client.post(
+            f"{POLAR_API}/customer-sessions",
+            headers=polar_headers(),
+            json={"customer_id": customer_id},
+        )
+
+    if session_res.status_code != 201:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to create portal session: {session_res.json()}",
+        )
+
+    token = session_res.json().get("token")
+    return {
+        "portal_url": f"https://polar.sh/customer-portal?token={token}"
+    }
+
+
+# ── POST /billing/webhook ─────────────────────────────────────────────────────
+
+def verify_signature(body: bytes, signature: str) -> bool:
+    if not POLAR_WEBHOOK_SECRET:
+        return False
+    expected = hmac.new(
+        POLAR_WEBHOOK_SECRET.encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+async def handle_event(event_type: str, data: dict):
+    """
+    Process webhook events in the background.
+    Replace the TODO comments with your actual database calls.
+    """
+    user_id = data.get("customer", {}).get("external_id")
+
+    if event_type == "subscription.active":
+        product_id = data.get("product_id")
+        plan = product_to_plan(product_id)
+        subscription_id = data.get("id")
+        print(f"✅ ACTIVE  — user={user_id}, plan={plan}, sub_id={subscription_id}")
+        # TODO: await db.update_user_plan(user_id, plan, subscription_id)
+
+    elif event_type == "subscription.updated":
+        status = data.get("status")
+        cancel_at_period_end = data.get("cancel_at_period_end", False)
+        print(f"🔄 UPDATED — user={user_id}, status={status}, "
+              f"cancel_at_end={cancel_at_period_end}")
+        # TODO: await db.sync_subscription(user_id, status, cancel_at_period_end)
+
+    elif event_type == "subscription.canceled":
+        ends_at = data.get("current_period_end")
+        print(f"⏳ CANCELED — user={user_id}, access until={ends_at}")
+        # TODO: await db.mark_canceling(user_id, ends_at)
+
+    elif event_type == "subscription.revoked":
+        print(f"🚫 REVOKED — user={user_id}")
+        # TODO: await db.revoke_access(user_id)
+
+    elif event_type == "order.created":
+        billing_reason = data.get("billing_reason")
+        if billing_reason == "subscription_cycle":
+            print(f"💰 RENEWED — user={user_id}")
+            # TODO: await db.log_renewal(user_id)
+
+    else:
+        print(f"ℹ️  UNHANDLED EVENT — type={event_type}")
+
+
+@router.post("/webhook")
+async def polar_webhook(request: Request, background_tasks: BackgroundTasks):
+    body = await request.body()
+    signature = request.headers.get("webhook-signature", "")
+
+    if not verify_signature(body, signature):
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+
+    event = await request.json()
+    event_type = event.get("type", "")
+    data = event.get("data", {})
+
+    # Acknowledge immediately, process in background
+    # This prevents Polar from timing out and disabling your endpoint
+    background_tasks.add_task(handle_event, event_type, data)
+
+    return {"received": True}

@@ -8,7 +8,7 @@ info:
     and automated deployment orchestration.
   contact:
     name: Pipeline Support
-    email: support@pipeline.dev
+    email: ahmadjamildhami@gmail.com
 
 servers:
   - url: https://pipeline-ai-labs-by-ahmad.up.railway.app/api/v1

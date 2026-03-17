@@ -1239,7 +1239,7 @@ components:
           description: Monthly price in USD
         price_id:
           type: [string, 'null']
-          description: Stripe price ID (null for free plan)
+          description: Polar price ID (null for free plan)
         features:
           type: array
           items:
@@ -1294,9 +1294,9 @@ components:
         status:
           type: string
           enum: [active, canceled, past_due, unpaid]
-        stripe_customer_id:
+        polar_customer_id:
           type: [string, 'null']
-        stripe_subscription_id:
+        polar_subscription_id:
           type: [string, 'null']
         current_period_start:
           type: [string, 'null']

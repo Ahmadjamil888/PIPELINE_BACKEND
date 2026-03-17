@@ -202,9 +202,7 @@ async def github_callback(code: str, state: str = None):
         raise HTTPException(status_code=500, detail="GitHub OAuth callback failed")
 
 
-@router.get(
-    "/repos/{user_id}"
-)
+@router.get("/repos/{user_id}")
 async def proxy_github_repos(user_id: str):
     """
     Proxy GitHub API request to fetch user's repositories.
@@ -236,3 +234,155 @@ async def proxy_github_repos(user_id: str):
     except httpx.HTTPError as e:
         logger.error(f"GitHub API request failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch GitHub repositories")
+
+
+async def get_installation_token(installation_id: int) -> str:
+    """
+    Get an installation access token using GitHub App JWT auth.
+    """
+    import jwt
+    import time
+    import httpx
+    import os
+    
+    app_id = os.getenv("GITHUB_APP_ID")
+    private_key = os.getenv("GITHUB_PRIVATE_KEY", "").replace("\\n", "\n")
+    
+    if not app_id or not private_key:
+        raise HTTPException(status_code=500, detail="GitHub App credentials not configured")
+    
+    # Create JWT signed with private key
+    now = int(time.time())
+    payload = {
+        "iat": now - 60,
+        "exp": now + 600,  # 10 minutes
+        "iss": app_id
+    }
+    jwt_token = jwt.encode(payload, private_key, algorithm="RS256")
+    
+    # Exchange JWT for installation token
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"https://api.github.com/app/installations/{installation_id}/access_tokens",
+            headers={
+                "Authorization": f"Bearer {jwt_token}",
+                "Accept": "application/vnd.github+json"
+            }
+        )
+        
+        if response.status_code != 201:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to get installation token: {response.text}"
+            )
+        
+        return response.json()["token"]
+
+
+@router.get("/setup")
+async def github_setup(
+    installation_id: int,
+    setup_action: str = "install",
+    state: str = None
+):
+    """
+    GitHub App setup endpoint - called after user installs the app.
+    Saves installation info and redirects back to frontend.
+    """
+    import httpx
+    from fastapi.responses import RedirectResponse
+    
+    try:
+        user_id = state
+        
+        # Get installation token
+        token = await get_installation_token(installation_id)
+        
+        # Fetch repos this installation has access to
+        async with httpx.AsyncClient() as client:
+            repos_response = await client.get(
+                "https://api.github.com/installation/repositories",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json"
+                }
+            )
+            
+            if repos_response.status_code != 200:
+                logger.error(f"Failed to fetch repos: {repos_response.text}")
+                raise HTTPException(status_code=500, detail="Failed to fetch repositories")
+            
+            repos = repos_response.json().get("repositories", [])
+        
+        # Save installation info
+        _github_installations[user_id] = {
+            "installation_id": installation_id,
+            "repos": [{"id": r["id"], "full_name": r["full_name"], "name": r["name"], 
+                      "default_branch": r["default_branch"], "html_url": r["html_url"]} 
+                     for r in repos],
+            "created_at": datetime.now()
+        }
+        
+        logger.info(f"GitHub App installed for user {user_id}, installation_id: {installation_id}, repos: {len(repos)}")
+        
+        # Redirect to frontend
+        return RedirectResponse(
+            url=f"https://pipeline-labs.vercel.app/dashboard/repos?connected=true&installation_id={installation_id}"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"GitHub setup failed: {e}")
+        raise HTTPException(status_code=500, detail=f"GitHub setup failed: {str(e)}")
+
+
+@router.get("/repos")
+async def list_repos(user_id: str):
+    """
+    List repositories accessible to the user via GitHub App installation.
+    """
+    installation = _github_installations.get(user_id)
+    
+    if not installation:
+        raise HTTPException(status_code=404, detail="GitHub App not installed")
+    
+    try:
+        # Get fresh token and fetch current repos
+        token = await get_installation_token(installation["installation_id"])
+        
+        import httpx
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api.github.com/installation/repositories",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json"
+                }
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to fetch repositories")
+            
+            repos = response.json().get("repositories", [])
+            
+            # Format for frontend
+            formatted_repos = [{
+                "id": r["id"],
+                "name": r["name"],
+                "full_name": r["full_name"],
+                "description": r.get("description", ""),
+                "private": r["private"],
+                "html_url": r["html_url"],
+                "default_branch": r["default_branch"],
+                "language": r.get("language", ""),
+                "updated_at": r["updated_at"]
+            } for r in repos]
+            
+            return {"repositories": formatted_repos}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to list repos: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list repositories")

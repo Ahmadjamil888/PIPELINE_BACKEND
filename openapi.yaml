@@ -102,6 +102,97 @@ paths:
         '404':
           description: Repository not found
 
+  # ==================== GITHUB APP ====================
+  /github/setup:
+    get:
+      summary: GitHub App setup callback
+      description: |
+        Called by GitHub after user installs the GitHub App.
+        Saves installation_id and redirects back to frontend.
+      tags: [GitHub]
+      operationId: githubSetup
+      parameters:
+        - name: installation_id
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: setup_action
+          in: query
+          schema:
+            type: string
+            default: install
+        - name: state
+          in: query
+          schema:
+            type: string
+            description: User ID passed during installation
+      responses:
+        '302':
+          description: Redirect to frontend
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /github/repos:
+    get:
+      summary: List GitHub repositories
+      description: List repositories accessible via GitHub App installation
+      tags: [GitHub]
+      operationId: listGitHubRepos
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of repositories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repositories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        name:
+                          type: string
+                        full_name:
+                          type: string
+                        description:
+                          type: string
+                        private:
+                          type: boolean
+                        html_url:
+                          type: string
+                        default_branch:
+                          type: string
+                        language:
+                          type: string
+                        updated_at:
+                          type: string
+        '404':
+          description: GitHub App not installed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   # ==================== DEPLOYMENTS ====================
   /deployments:
     get:
@@ -138,8 +229,10 @@ paths:
                 $ref: '#/components/schemas/DeploymentList'
 
     post:
-      summary: Create deployment plan
-      description: Create a new deployment plan based on repository analysis
+      summary: Create deployment
+      description: |
+        Create a new deployment for a repository.
+        Triggers the AI pipeline in the background.
       tags: [Deployments]
       operationId: createDeployment
       requestBody:
@@ -147,16 +240,20 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/DeploymentCreateRequest'
+              $ref: '#/components/schemas/DeploymentRequest'
       responses:
         '201':
           description: Deployment created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeploymentPlan'
+                $ref: '#/components/schemas/DeploymentResponse'
         '400':
           description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /deployments/{deployment_id}:
     get:
@@ -878,43 +975,65 @@ components:
           type: integer
           description: Estimated deployment duration
 
-    DeploymentStatus:
+    DeploymentRequest:
       type: object
-      required: [id, repo_id, status, services, created_at]
+      required: [user_id, repo_full_name, installation_id]
       properties:
-        id:
+        user_id:
           type: string
-          format: uuid
-        repo_id:
+          description: User ID from Supabase
+        repo_full_name:
           type: string
-          format: uuid
-        sandbox_id:
+          description: Repository full name (e.g., owner/repo)
+        installation_id:
+          type: integer
+          description: GitHub App installation ID
+        default_branch:
+          type: string
+          default: main
+          description: Default branch to deploy
+
+    DeploymentResponse:
+      type: object
+      required: [deployment_id, status, message]
+      properties:
+        deployment_id:
           type: string
           format: uuid
         status:
           type: string
-          enum: [pending, running, succeeded, failed, cancelled, retrying]
-        services:
-          type: array
-          items:
-            $ref: '#/components/schemas/ServiceDeployment'
-        environment:
+          enum: [started, analyzing, deploying, success, failed]
+        message:
           type: string
-        branch:
+
+    DeploymentStatus:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id:
           type: string
-        started_at:
+          format: uuid
+        status:
+          type: string
+          enum: [started, analyzing, cloning, ai_analyzing, analyzed, deploying_backend, deploying_frontend, success, failed]
+        frontend_url:
+          type: string
+          description: Deployed frontend URL (if applicable)
+        backend_url:
+          type: string
+          description: Deployed backend URL (if applicable)
+        analysis:
+          type: object
+          description: AI analysis results
+        error:
+          type: string
+          description: Error message if deployment failed
+        created_at:
           type: string
           format: date-time
-        completed_at:
+        updated_at:
           type: string
           format: date-time
-        duration_seconds:
-          type: integer
-        error_message:
-          type: string
-        retry_count:
-          type: integer
-          default: 0
 
     ServiceDeployment:
       type: object

@@ -102,6 +102,34 @@ async def revoke_github_token(user_id: str):
 
 
 @router.get(
+    "/connect"
+)
+async def github_connect(user_id: str = ""):
+    """
+    Returns the GitHub OAuth URL for the user to initiate the connection.
+    """
+    import os
+    
+    client_id = os.getenv("GITHUB_CLIENT_ID")
+    callback_url = os.getenv(
+        "GITHUB_CALLBACK_URL",
+        "https://pipeline-ai-labs-by-ahmad.up.railway.app/api/v1/github/callback"
+    )
+    
+    if not client_id:
+        raise HTTPException(status_code=500, detail="GitHub OAuth client ID not configured")
+    
+    auth_url = (
+        f"https://github.com/login/oauth/authorize"
+        f"?client_id={client_id}"
+        f"&redirect_uri={callback_url}"
+        f"&scope=repo,read:user"
+        f"&state={user_id}"
+    )
+    return {"auth_url": auth_url}
+
+
+@router.get(
     "/callback"
 )
 async def github_callback(code: str, state: str = None):

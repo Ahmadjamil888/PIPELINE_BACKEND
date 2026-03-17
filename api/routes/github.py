@@ -102,6 +102,79 @@ async def revoke_github_token(user_id: str):
 
 
 @router.get(
+    "/callback"
+)
+async def github_callback(code: str, state: str = None):
+    """
+    GitHub OAuth callback endpoint.
+    Exchanges the code for an access token and stores it.
+    """
+    import httpx
+    import os
+    
+    client_id = os.getenv("GITHUB_CLIENT_ID")
+    client_secret = os.getenv("GITHUB_CLIENT_SECRET")
+    
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=500, detail="GitHub OAuth credentials not configured")
+    
+    try:
+        # Exchange code for access token
+        async with httpx.AsyncClient() as client:
+            token_response = await client.post(
+                "https://github.com/login/oauth/access_token",
+                headers={"Accept": "application/json"},
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "code": code
+                }
+            )
+            
+            if token_response.status_code != 200:
+                raise HTTPException(status_code=400, detail="Failed to exchange code for token")
+            
+            token_data = token_response.json()
+            access_token = token_data.get("access_token")
+            
+            if not access_token:
+                raise HTTPException(status_code=400, detail="No access token received")
+            
+            # Get user info from GitHub
+            user_response = await client.get(
+                "https://api.github.com/user",
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            
+            if user_response.status_code != 200:
+                raise HTTPException(status_code=400, detail="Failed to get user info")
+            
+            user_data = user_response.json()
+            github_user_id = str(user_data.get("id"))
+            
+            # Store the token
+            _github_tokens[github_user_id] = {
+                "access_token": access_token,
+                "refresh_token": None,
+                "created_at": datetime.now()
+            }
+            
+            logger.info(f"GitHub OAuth completed for user: {github_user_id}")
+            
+            # Redirect to frontend with success
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(
+                url="https://pipeline-labs.vercel.app/dashboard/repos/connect?github_connected=true"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"GitHub callback failed: {e}")
+        raise HTTPException(status_code=500, detail="GitHub OAuth callback failed")
+
+
+@router.get(
     "/repos/{user_id}"
 )
 async def proxy_github_repos(user_id: str):

@@ -374,6 +374,7 @@ async def list_repos(user_id: str):
                 "description": r.get("description", ""),
                 "private": r["private"],
                 "html_url": r["html_url"],
+                "clone_url": r.get("clone_url", ""),
                 "default_branch": r["default_branch"],
                 "language": r.get("language", ""),
                 "updated_at": r["updated_at"]
@@ -386,3 +387,54 @@ async def list_repos(user_id: str):
     except Exception as e:
         logger.error(f"Failed to list repos: {e}")
         raise HTTPException(status_code=500, detail="Failed to list repositories")
+
+
+@router.post("/repos/connect")
+async def connect_repo(body: dict):
+    """Create a project from a selected repo and start AI pipeline"""
+    from services.db_service import supabase
+    from services.pipeline_orchestrator import start_pipeline
+    import asyncio
+
+    user_id = body.get("user_id")
+    repo = body.get("repo")
+
+    if not user_id or not repo:
+        raise HTTPException(status_code=400, detail="Missing user_id or repo")
+
+    # Get profile
+    profile_res = supabase.table("profiles")\
+        .select("id, github_username")\
+        .eq("user_id", user_id)\
+        .execute()
+
+    if not profile_res.data:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    profile = profile_res.data[0]
+
+    # Create project in DB immediately
+    project_res = supabase.table("projects").insert({
+        "owner_id": profile["id"],
+        "name": repo["name"],
+        "repo_url": repo.get("html_url", repo.get("url", "")),
+        "github_repo_id": repo["id"],
+        "provider": "github",
+        "default_branch": repo.get("default_branch", "main"),
+        "is_private": repo.get("private", False),
+        "status": "pending",
+    }).execute()
+
+    project = project_res.data[0]
+    project_id = project["id"]
+
+    # Start AI pipeline in background
+    asyncio.create_task(start_pipeline(
+        repo_full_name=repo["full_name"],
+        repo_id=repo["id"],
+        installation_id=body.get("installation_id", 0),
+        github_username=profile["github_username"] or "",
+        project_id=project_id,
+    ))
+
+    return {"project_id": project_id}

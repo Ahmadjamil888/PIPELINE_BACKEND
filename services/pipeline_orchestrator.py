@@ -29,6 +29,7 @@ async def start_pipeline(
     repo_id: int,
     installation_id: int,
     github_username: str,
+    project_id: str = None,   # ← add this
 ):
     """
     Main orchestrator — runs all 5 agents in sequence.
@@ -42,7 +43,6 @@ async def start_pipeline(
     6. Agent 5: Fix errors and retry if needed
     """
     logger.info(f"Starting pipeline for {repo_full_name}")
-    project_id = None
     
     try:
         # ── Setup ─────────────────────────────────────────────────────────────
@@ -56,16 +56,25 @@ async def start_pipeline(
         user_id = user["id"]
         api_keys = await get_user_api_keys(user_id)
         
-        # Create project in DB
-        project = await create_project(
-            owner_id=user_id,
-            repo_url=f"https://github.com/{repo_full_name}",
-            repo_id=repo_id,
-            name=repo_full_name.split("/")[-1],
-        )
-        project_id = project["id"]
-        
-        logger.info(f"Project created: {project_id}")
+        # If project_id passed, use it — don't create a new one
+        if project_id:
+            project_res = supabase.table("projects")\
+                .select("*")\
+                .eq("id", project_id)\
+                .execute()
+            project = project_res.data[0]
+            logger.info(f"Using existing project: {project_id}")
+        else:
+            # Create project in DB
+            project = await create_project(
+                owner_id=user_id,
+                repo_url=f"https://github.com/{repo_full_name}",
+                repo_id=repo_id,
+                name=repo_full_name.split("/")[-1],
+            )
+            project_id = project["id"]
+            
+        logger.info(f"Project ready: {project_id}")
         
         # ── Agent 1: Scan ─────────────────────────────────────────────────────
         await emit_progress(project_id, "scanning", "Scanning repository structure...")

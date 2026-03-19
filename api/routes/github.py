@@ -337,6 +337,29 @@ async def github_setup(
         raise HTTPException(status_code=500, detail=f"GitHub setup failed: {str(e)}")
 
 
+@router.get("/status")
+async def github_status(user_id: str):
+    """Check if user has a GitHub token stored"""
+    from services.db_service import supabase
+
+    profile_res = supabase.table("profiles")\
+        .select("id")\
+        .eq("user_id", user_id)\
+        .execute()
+
+    if not profile_res.data:
+        return {"connected": False}
+
+    profile_id = profile_res.data[0]["id"]
+
+    token_res = supabase.table("github_tokens")\
+        .select("id")\
+        .eq("profile_id", profile_id)\
+        .execute()
+
+    return {"connected": bool(token_res.data)}
+
+
 @router.get("/repos")
 async def list_repos(user_id: str):
     """

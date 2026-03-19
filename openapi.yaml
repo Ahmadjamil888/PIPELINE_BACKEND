@@ -107,6 +107,39 @@ paths:
                     format: uri
                     description: GitHub App installation URL
 
+  /github/status:
+    get:
+      summary: Check GitHub connection status
+      description: |
+        Returns whether the user has a GitHub token stored.
+        Used to determine if user needs to connect GitHub before listing repos.
+      tags: [GitHub]
+      operationId: checkGitHubStatus
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The user's ID to check GitHub connection for
+      responses:
+        '200':
+          description: GitHub connection status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connected:
+                    type: boolean
+                    example: true
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /github/setup:
     get:
       summary: GitHub App setup callback

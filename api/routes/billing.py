@@ -269,42 +269,101 @@ def verify_signature(body: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-async def handle_event(event_type: str, data: dict):
+async def handle_event(event_type: str, data: dict, db=None):
     """
     Process webhook events in the background.
-    Replace the TODO comments with your actual database calls.
+    Updates subscriptions table in Supabase.
     """
+    import os
+    from supabase import create_client
+    
+    # Initialize Supabase client if db not provided
+    if db is None:
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+        if supabase_url and supabase_key:
+            db = create_client(supabase_url, supabase_key)
+    
     user_id = data.get("customer", {}).get("external_id")
-
+    if not user_id:
+        print(f"⚠️ No user_id found in webhook data")
+        return
+    
     if event_type == "subscription.active":
         product_id = data.get("product_id")
         plan = product_to_plan(product_id)
         subscription_id = data.get("id")
+        current_period_start = data.get("current_period_start")
+        current_period_end = data.get("current_period_end")
+        
         print(f"✅ ACTIVE  — user={user_id}, plan={plan}, sub_id={subscription_id}")
-        # TODO: await db.update_user_plan(user_id, plan, subscription_id)
-
+        
+        # Upsert subscription
+        if db:
+            try:
+                db.table("subscriptions").upsert({
+                    "profile_id": user_id,
+                    "plan": plan,
+                    "polar_subscription_id": subscription_id,
+                    "status": "active",
+                    "current_period_start": current_period_start,
+                    "current_period_end": current_period_end,
+                    "cancel_at_period_end": False,
+                }, on_conflict="profile_id").execute()
+                print(f"  → Subscription upserted for {user_id}")
+            except Exception as e:
+                print(f"  → Error upserting subscription: {e}")
+    
     elif event_type == "subscription.updated":
         status = data.get("status")
         cancel_at_period_end = data.get("cancel_at_period_end", False)
-        print(f"🔄 UPDATED — user={user_id}, status={status}, "
-              f"cancel_at_end={cancel_at_period_end}")
-        # TODO: await db.sync_subscription(user_id, status, cancel_at_period_end)
-
+        
+        print(f"🔄 UPDATED — user={user_id}, status={status}, cancel_at_end={cancel_at_period_end}")
+        
+        if db:
+            try:
+                db.table("subscriptions").update({
+                    "status": status,
+                    "cancel_at_period_end": cancel_at_period_end,
+                }).eq("profile_id", user_id).execute()
+                print(f"  → Subscription updated for {user_id}")
+            except Exception as e:
+                print(f"  → Error updating subscription: {e}")
+    
     elif event_type == "subscription.canceled":
         ends_at = data.get("current_period_end")
+        
         print(f"⏳ CANCELED — user={user_id}, access until={ends_at}")
-        # TODO: await db.mark_canceling(user_id, ends_at)
-
+        
+        if db:
+            try:
+                db.table("subscriptions").update({
+                    "status": "canceled",
+                    "cancel_at_period_end": True,
+                    "current_period_end": ends_at,
+                }).eq("profile_id", user_id).execute()
+                print(f"  → Subscription marked as canceling for {user_id}")
+            except Exception as e:
+                print(f"  → Error updating subscription: {e}")
+    
     elif event_type == "subscription.revoked":
         print(f"🚫 REVOKED — user={user_id}")
-        # TODO: await db.revoke_access(user_id)
-
+        
+        if db:
+            try:
+                db.table("subscriptions").update({
+                    "status": "revoked",
+                }).eq("profile_id", user_id).execute()
+                print(f"  → Subscription revoked for {user_id}")
+            except Exception as e:
+                print(f"  → Error updating subscription: {e}")
+    
     elif event_type == "order.created":
         billing_reason = data.get("billing_reason")
         if billing_reason == "subscription_cycle":
             print(f"💰 RENEWED — user={user_id}")
-            # TODO: await db.log_renewal(user_id)
-
+            # Renewal is handled by subscription.updated event
+    
     else:
         print(f"ℹ️  UNHANDLED EVENT — type={event_type}")
 

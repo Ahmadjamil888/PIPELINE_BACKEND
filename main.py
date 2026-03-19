@@ -8,8 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 
 # Import routers
-from api.routes import repos, deployments, sandboxes, dashboard, github
-from api.billing import router as billing_router
+from api.routes import repos, deployments, sandboxes, dashboard, billing
+from api.routes.github import router as github_router
+from api import webhooks, projects
 from schemas import HealthResponse
 
 # Configure logging
@@ -236,8 +237,10 @@ app.include_router(repos.router, prefix="/api/v1")
 app.include_router(deployments.router, prefix="/api/v1")
 app.include_router(sandboxes.router, prefix="/api/v1")
 app.include_router(dashboard.router, prefix="/api/v1")
-app.include_router(github.router, prefix="/api/v1")
-app.include_router(billing_router, prefix="/api/v1")
+app.include_router(github_router, prefix="/api/v1")
+app.include_router(billing.router, prefix="/api/v1")
+app.include_router(webhooks.router, prefix="/api/v1")
+app.include_router(projects.router, prefix="/api/v1")
 
 
 # Root endpoint

@@ -252,7 +252,7 @@ async def root():
     return {
         "name": "Pipeline AI DevOps Platform",
         "version": "1.0.0",
-        "documentation": "/docs",
+        "documentation": "https://pipeline.stldocs.app",
         "health": "/health"
     }
 

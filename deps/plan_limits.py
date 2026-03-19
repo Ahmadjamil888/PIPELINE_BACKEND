@@ -5,7 +5,6 @@ from fastapi import HTTPException
 
 PLAN_LIMITS = {
     "free":    {"orgs": 1, "projects": 3},
-    "starter": {"orgs": 3, "projects": 10},
     "pro":     {"orgs": 10, "projects": 50},
     "team":    {"orgs": -1, "projects": -1},  # unlimited
 }

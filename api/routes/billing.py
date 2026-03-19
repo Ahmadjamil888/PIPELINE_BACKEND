@@ -17,7 +17,6 @@ POLAR_TOKEN = os.getenv("POLAR_ACCESS_TOKEN", "")
 POLAR_WEBHOOK_SECRET = os.getenv("POLAR_WEBHOOK_SECRET", "")
 
 PRODUCT_MAP = {
-    "starter": os.getenv("POLAR_PRODUCT_ID_STARTER", ""),
     "pro":     os.getenv("POLAR_PRODUCT_ID_PRO", ""),
     "team":    os.getenv("POLAR_PRODUCT_ID_TEAM", ""),
 }
@@ -58,20 +57,6 @@ async def get_polar_customer_id(user_id: str) -> str | None:
 async def get_plans():
     return {
         "plans": [
-            {
-                "id": "starter",
-                "name": "Starter",
-                "price": 9,
-                "price_id": PRODUCT_MAP["starter"],
-                "features": [
-                    "5 deployments/month",
-                    "2 projects",
-                    "Community support",
-                ],
-                "deployments_limit": 5,
-                "projects_limit": 2,
-                "priority": "normal",
-            },
             {
                 "id": "pro",
                 "name": "Pro",

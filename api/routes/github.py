@@ -192,7 +192,7 @@ async def github_callback(code: str, state: str = None):
             # Redirect to frontend with success
             from fastapi.responses import RedirectResponse
             return RedirectResponse(
-                url="https://pipeline-labs.vercel.app/dashboard/repos/connect?github_connected=true"
+                url="https://pipeline-labs.vercel.app/dashboard?github_connected=true"
             )
             
     except HTTPException:

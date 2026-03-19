@@ -18,8 +18,192 @@ security:
   - BearerAuth: []
 
 paths:
-  # ==================== REPOSITORIES ====================
-  /repos/connect:
+  # ==================== GITHUB APP WEBHOOKS ====================
+  /webhooks/github:
+    post:
+      summary: GitHub App webhook handler
+      description: |
+        Handles GitHub App installation events and push events.
+        Triggered automatically when user installs the GitHub App.
+      tags: [Webhooks]
+      operationId: handleGitHubWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GitHubWebhookPayload'
+      responses:
+        '200':
+          description: Webhook processed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+        '400':
+          description: Invalid webhook signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error processing webhook
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== GITHUB INTEGRATION ====================
+  /github/repos:
+    get:
+      summary: List user's GitHub repositories
+      description: |
+        Returns a list of repositories accessible to the connected GitHub App.
+      tags: [GitHub]
+      operationId: getGitHubRepos
+      responses:
+        '200':
+          description: List of repositories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repositories:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GitHubRepository'
+        '401':
+          description: Not authenticated with GitHub
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /github/connect:
+    get:
+      summary: Initiate GitHub App installation
+      description: |
+        Returns the URL to install the GitHub App.
+        Redirects user to GitHub for authorization.
+      tags: [GitHub]
+      operationId: connectGitHub
+      responses:
+        '200':
+          description: GitHub App installation URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+                    description: GitHub App installation URL
+
+  /github/setup:
+    get:
+      summary: GitHub App setup callback
+      description: |
+        Callback URL after GitHub App installation is complete.
+        Stores installation_id and redirects to frontend.
+      tags: [GitHub]
+      operationId: setupGitHub
+      parameters:
+        - name: installation_id
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: setup_action
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [install, update]
+        - name: state
+          in: query
+          schema:
+            type: string
+            description: User ID passed during installation
+      responses:
+        '302':
+          description: Redirects to frontend with connected status
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /github/repos:
+    get:
+      summary: List GitHub repositories
+      description: List repositories accessible via GitHub App installation
+      tags: [GitHub]
+      operationId: listGitHubRepos
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of repositories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repositories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        name:
+                          type: string
+                        full_name:
+                          type: string
+                        description:
+                          type: string
+                        private:
+                          type: boolean
+                        html_url:
+                          type: string
+                        default_branch:
+                          type: string
+                        language:
+                          type: string
+                        updated_at:
+                          type: string
+        '404':
+          description: GitHub App not installed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== DEPLOYMENTS ====================
     post:
       summary: Connect a Git repository
       description: Connect a Git repository from GitHub or GitLab to the platform
@@ -101,97 +285,6 @@ paths:
                 $ref: '#/components/schemas/RepoConnection'
         '404':
           description: Repository not found
-
-  # ==================== GITHUB APP ====================
-  /github/setup:
-    get:
-      summary: GitHub App setup callback
-      description: |
-        Called by GitHub after user installs the GitHub App.
-        Saves installation_id and redirects back to frontend.
-      tags: [GitHub]
-      operationId: githubSetup
-      parameters:
-        - name: installation_id
-          in: query
-          required: true
-          schema:
-            type: integer
-        - name: setup_action
-          in: query
-          schema:
-            type: string
-            default: install
-        - name: state
-          in: query
-          schema:
-            type: string
-            description: User ID passed during installation
-      responses:
-        '302':
-          description: Redirect to frontend
-        '400':
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /github/repos:
-    get:
-      summary: List GitHub repositories
-      description: List repositories accessible via GitHub App installation
-      tags: [GitHub]
-      operationId: listGitHubRepos
-      parameters:
-        - name: user_id
-          in: query
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: List of repositories
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  repositories:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: integer
-                        name:
-                          type: string
-                        full_name:
-                          type: string
-                        description:
-                          type: string
-                        private:
-                          type: boolean
-                        html_url:
-                          type: string
-                        default_branch:
-                          type: string
-                        language:
-                          type: string
-                        updated_at:
-                          type: string
-        '404':
-          description: GitHub App not installed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== DEPLOYMENTS ====================
   /deployments:
@@ -1297,6 +1390,72 @@ components:
           items:
             $ref: '#/components/schemas/LogEntry'
 
+    GitHubWebhookPayload:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [created, deleted, push, pull_request, installation, installation_repositories]
+        installation:
+          type: object
+          properties:
+            id:
+              type: integer
+            account:
+              type: object
+              properties:
+                login:
+                  type: string
+                id:
+                  type: integer
+        repository:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            full_name:
+              type: string
+            clone_url:
+              type: string
+            default_branch:
+              type: string
+        sender:
+          type: object
+          properties:
+            login:
+              type: string
+            id:
+              type: integer
+
+    GitHubRepository:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        full_name:
+          type: string
+        description:
+          type: string
+        private:
+          type: boolean
+        html_url:
+          type: string
+          format: uri
+        clone_url:
+          type: string
+        default_branch:
+          type: string
+        language:
+          type: string
+        stargazers_count:
+          type: integer
+        forks_count:
+          type: integer
+
     # ==================== ERROR SCHEMAS ====================
     ErrorResponse:
       type: object
@@ -1350,7 +1509,7 @@ components:
       properties:
         id:
           type: string
-          enum: [starter, pro, team]
+          enum: [free, pro, team]
         name:
           type: string
         price:
@@ -1378,7 +1537,7 @@ components:
       properties:
         plan_id:
           type: string
-          enum: [starter, pro, team]
+          enum: [pro, team]
         user_id:
           type: string
         success_url:
@@ -1409,7 +1568,7 @@ components:
           type: string
         plan:
           type: string
-          enum: [free, starter, pro, team]
+          enum: [free, pro, team]
         status:
           type: string
           enum: [active, canceled, past_due, unpaid]

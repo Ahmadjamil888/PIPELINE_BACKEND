@@ -1,9 +1,12 @@
 import logging
+import os
+import uuid
 from typing import List, Optional
 from uuid import UUID, uuid4
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Depends
+from pydantic import BaseModel
 
 from schemas import (
     DeploymentPlan,
@@ -20,9 +23,15 @@ from agents.deployment_runner import DeploymentRunner
 from sandbox.daytona_manager import DaytonaManager
 from deployers.vercel import VercelDeployer
 from deployers.render import RenderDeployer
+from services.db_service import supabase
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/deployments", tags=["Deployments"])
+
+# GCP Configuration
+GCP_PROJECT = os.getenv("GCP_PROJECT_ID", "")
+GCP_REGION = os.getenv("GCP_REGION", "us-central1")
+AR_REPO = "user-models"
 
 # In-memory store (replace with database in production)
 _deployments: dict = {}
@@ -375,3 +384,79 @@ async def get_deployment_logs(
         logs=logs,
         timestamp=datetime.now()
     )
+
+
+# Model Deployment Classes
+class ModelDeployRequest(BaseModel):
+    user_id: str
+    repo_url: str
+    model_name: str
+    env_vars: dict = {}
+    memory: str = "2Gi"
+    cpu: str = "2"
+    gpu: bool = False
+
+
+@router.post("/model")
+async def deploy_user_model(req: ModelDeployRequest):
+    """Deploy a user's AI model to Google Cloud Run"""
+    if not GCP_PROJECT:
+        raise HTTPException(
+            status_code=500, 
+            detail="Deployment service not configured"
+        )
+    
+    service_name = f"model-{req.user_id[:8]}-{req.model_name}".lower().replace("_", "-")
+    image_tag = f"{GCP_REGION}-docker.pkg.dev/{GCP_PROJECT}/{AR_REPO}/{service_name}:latest"
+    
+    # Generate public ID for the model
+    import uuid
+    public_id = str(uuid.uuid4())
+    
+    try:
+        # Import GCP libraries
+        from services.agents.gcp_deployer import deploy_to_cloud_run
+        
+        # Deploy to Cloud Run
+        result = await deploy_to_cloud_run(
+            service={"name": req.model_name},
+            image_url=image_tag,
+            env_vars=req.env_vars
+        )
+        
+        # Save deployment to Supabase with both URLs
+        supabase.table("deployments").insert({
+            "user_id": req.user_id,
+            "public_id": public_id,
+            "service_name": service_name,
+            "model_name": req.model_name,
+            "internal_url": result.get("internal_url", ""),  # Hidden GCP URL
+            "public_url": f"https://pipeline-labs.vercel.app/api/models/{public_id}",  # Frontend domain
+            "status": result.get("status", "deploying"),
+            "platform": "pipeline-labs",
+            "gpu_enabled": req.gpu,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+        
+        # Return ONLY branded information
+        return {
+            "model_id": public_id,
+            "service_name": service_name,
+            "url": f"https://pipeline-labs.vercel.app/api/models/{public_id}",  # Frontend domain
+            "status": result.get("status", "deploying"),
+            "platform": "pipeline-labs"
+        }
+        
+    except ImportError as e:
+        from api.utils.status_messages import sanitize_error_message
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e))
+        )
+    except Exception as e:
+        logger.error(f"Model deployment failed: {e}")
+        from api.utils.status_messages import sanitize_error_message
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(str(e))
+        )

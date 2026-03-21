@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from api.routes import repos, deployments, sandboxes, dashboard, billing, organisations, analysis
 from api.routes.github import router as github_router
 from api import webhooks, projects
+from api.domains import router as domains_router
+from api.routes.models import router as models_router
 from schemas import HealthResponse
 
 # Configure logging
@@ -81,6 +83,55 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Response sanitization middleware to hide GCP references
+import re
+import json
+
+GCP_PATTERNS = [
+    r"\.run\.app", r"\.googleapis\.com", r"us-central1",
+    r"gcr\.io", r"cloudbuild", r"artifactregistry",
+    r"gke-", r"cloud-build-", r"pkg\.dev",
+    r"projects/[^/]+", r"locations/[^/]+", r"services/[^/]+"
+]
+
+@app.middleware("http")
+async def sanitize_responses(request: Request, call_next):
+    response = await call_next(request)
+    
+    # Only sanitize JSON responses
+    if "application/json" in response.headers.get("content-type", ""):
+        # Read response body
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+        
+        try:
+            text = body.decode()
+            # Check for GCP patterns
+            for pattern in GCP_PATTERNS:
+                if re.search(pattern, text, re.IGNORECASE):
+                    # Log the leak for fixing
+                    logger.warning(f"GCP reference detected in response: {pattern}")
+                    # Replace with placeholder
+                    text = re.sub(pattern, "[pipeline-labs-internal]", text, flags=re.IGNORECASE)
+            
+            # Return sanitized response
+            return Response(
+                content=text,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type="application/json"
+            )
+        except:
+            # If sanitization fails, return original response
+            return Response(
+                content=body,
+                status_code=response.status_code,
+                headers=dict(response.headers)
+            )
+    
+    return response
 
 
 # Exception handlers
@@ -243,6 +294,8 @@ app.include_router(webhooks.router, prefix="/api/v1")
 app.include_router(projects.router, prefix="/api/v1")
 app.include_router(organisations.router, prefix="/api/v1")
 app.include_router(analysis.router, prefix="/api/v1")
+app.include_router(domains_router, prefix="/api/v1")
+app.include_router(models_router, prefix="/api/v1")
 
 
 # Root endpoint

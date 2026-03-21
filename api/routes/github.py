@@ -123,8 +123,8 @@ async def github_connect(user_id: str = ""):
         f"https://github.com/login/oauth/authorize"
         f"?client_id={client_id}"
         f"&redirect_uri={callback_url}"
-        f"&scope=repo,read:user"
-        f"&state={user_id}"
+        f"&scope=repo,read:user,user:email"
+        f"&state={user_id}"  # Pass user_id as state
     )
     return {"auth_url": auth_url}
 
@@ -139,9 +139,11 @@ async def github_callback(code: str, state: str = None):
     """
     import httpx
     import os
+    from fastapi.responses import RedirectResponse
     
     client_id = os.getenv("GITHUB_CLIENT_ID")
     client_secret = os.getenv("GITHUB_CLIENT_SECRET")
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "https://pipeline-labs.vercel.app")
     
     if not client_id or not client_secret:
         raise HTTPException(status_code=500, detail="GitHub OAuth credentials not configured")
@@ -152,7 +154,7 @@ async def github_callback(code: str, state: str = None):
             token_response = await client.post(
                 "https://github.com/login/oauth/access_token",
                 headers={"Accept": "application/json"},
-                data={
+                json={
                     "client_id": client_id,
                     "client_secret": client_secret,
                     "code": code
@@ -165,34 +167,56 @@ async def github_callback(code: str, state: str = None):
             token_data = token_response.json()
             access_token = token_data.get("access_token")
             
+            print(f"GitHub callback — state={state}, token_received={bool(access_token)}")
+            
             if not access_token:
-                raise HTTPException(status_code=400, detail="No access token received")
+                print(f"GitHub OAuth error: {token_data}")
+                return RedirectResponse(
+                    url=f"{FRONTEND_URL}/dashboard?github_error=true"
+                )
             
-            # Get user info from GitHub
-            user_response = await client.get(
-                "https://api.github.com/user",
-                headers={"Authorization": f"Bearer {access_token}"}
-            )
+            # Get GitHub user info
+            async with httpx.AsyncClient() as client:
+                user_res = await client.get(
+                    "https://api.github.com/user",
+                    headers={"Authorization": f"Bearer {access_token}"}
+                )
+            github_user = user_res.json()
+            github_username = github_user.get("login", "")
             
-            if user_response.status_code != 200:
-                raise HTTPException(status_code=400, detail="Failed to get user info")
+            print(f"GitHub user: {github_username}")
             
-            user_data = user_response.json()
-            github_user_id = str(user_data.get("id"))
+            # Save token to Supabase — state is the user_id
+            if state:
+                from services.db_service import supabase
+                
+                profile_res = supabase.table("profiles")\
+                    .select("id")\
+                    .eq("user_id", state)\
+                    .execute()
+                
+                print(f"Profile lookup: {profile_res.data}")
+                
+                if profile_res.data:
+                    profile_id = profile_res.data[0]["id"]
+                    
+                    # Upsert token to database
+                    token_res = supabase.table("github_tokens").upsert({
+                        "profile_id": profile_id,
+                        "access_token_encrypted": access_token,
+                    }, on_conflict="profile_id").execute()
+                    
+                    print(f"Token saved: {token_res.data}")
+                    
+                    # Update github_username on profile
+                    supabase.table("profiles").update({
+                        "github_username": github_username,
+                    }).eq("id", profile_id).execute()
             
-            # Store the token
-            _github_tokens[github_user_id] = {
-                "access_token": access_token,
-                "refresh_token": None,
-                "created_at": datetime.now()
-            }
+            logger.info(f"GitHub OAuth completed for user: {github_username}")
             
-            logger.info(f"GitHub OAuth completed for user: {github_user_id}")
-            
-            # Redirect to frontend with success
-            from fastapi.responses import RedirectResponse
             return RedirectResponse(
-                url="https://pipeline-labs.vercel.app/dashboard?github_connected=true"
+                url=f"{FRONTEND_URL}/dashboard?github_connected=true"
             )
             
     except HTTPException:
@@ -209,17 +233,36 @@ async def proxy_github_repos(user_id: str):
     Uses stored token to authenticate with GitHub.
     """
     import httpx
+    from services.db_service import supabase
     
-    token_data = _github_tokens.get(user_id)
-    if not token_data:
+    # Get profile from user_id
+    profile_res = supabase.table("profiles")\
+        .select("id")\
+        .eq("user_id", user_id)\
+        .execute()
+    
+    if not profile_res.data:
+        raise HTTPException(status_code=401, detail="User not found")
+    
+    profile_id = profile_res.data[0]["id"]
+    
+    # Get token from database
+    token_res = supabase.table("github_tokens")\
+        .select("access_token_encrypted")\
+        .eq("profile_id", profile_id)\
+        .execute()
+    
+    if not token_res.data:
         raise HTTPException(status_code=401, detail="GitHub not connected")
+    
+    access_token = token_res.data[0]["access_token_encrypted"]
     
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 "https://api.github.com/user/repos?sort=updated&per_page=100",
                 headers={
-                    "Authorization": f"Bearer {token_data['access_token']}",
+                    "Authorization": f"Bearer {access_token}",
                     "Accept": "application/vnd.github.v3+json"
                 }
             )

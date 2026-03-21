@@ -113,32 +113,66 @@ class CheckoutRequest(BaseModel):
     cancel_url: str
 
 
+@router.get("/debug")
+async def debug_billing():
+    """Debug endpoint to check Polar configuration"""
+    return {
+        "polar_token_set": bool(POLAR_TOKEN),
+        "polar_token_prefix": POLAR_TOKEN[:10] + "..." if POLAR_TOKEN else None,
+        "product_ids": {
+            "starter": PRODUCT_MAP["starter"][:8] + "..." if PRODUCT_MAP["starter"] else None,
+            "pro": PRODUCT_MAP["pro"][:8] + "..." if PRODUCT_MAP["pro"] else None,
+            "team": PRODUCT_MAP["team"][:8] + "..." if PRODUCT_MAP["team"] else None,
+        },
+        "webhook_secret_set": bool(POLAR_WEBHOOK_SECRET)
+    }
+
+
 @router.post("/checkout")
 async def create_checkout(req: CheckoutRequest):
     product_id = PRODUCT_MAP.get(req.plan_id)
     if not product_id:
-        raise HTTPException(status_code=400, detail=f"Invalid plan_id: {req.plan_id}")
-
-    async with httpx.AsyncClient() as client:
-        res = await client.post(
-            f"{POLAR_API}/checkouts",
-            headers=polar_headers(),
-            json={
-                "products": [product_id],
-                "success_url": req.success_url,
-                "external_customer_id": req.user_id,
-                "metadata": {
-                    "user_id": req.user_id,
-                    "plan_id": req.plan_id,
-                },
-            },
-        )
-
-    if res.status_code != 201:
         raise HTTPException(
             status_code=400,
-            detail=f"Polar checkout error: {res.json()}",
+            detail=f"Invalid plan_id '{req.plan_id}' or product ID not configured"
         )
+
+    if not POLAR_TOKEN:
+        raise HTTPException(
+            status_code=500,
+            detail="Polar access token not configured"
+        )
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            res = await client.post(
+                f"{POLAR_API}/checkouts",
+                headers=polar_headers(),
+                json={
+                    "products": [product_id],
+                    "success_url": req.success_url,
+                    "external_customer_id": req.user_id,
+                    "metadata": {
+                        "user_id": req.user_id,
+                        "plan_id": req.plan_id,
+                    },
+                },
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Polar API error: {str(e)}")
+
+    if res.status_code != 201:
+        try:
+            error_data = res.json()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Polar checkout error: {error_data}"
+            )
+        except:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Polar checkout error: HTTP {res.status_code}"
+            )
 
     data = res.json()
     return {
@@ -274,55 +308,88 @@ async def handle_event(event_type: str, data: dict):
     Process webhook events in the background.
     Replace the TODO comments with your actual database calls.
     """
-    user_id = data.get("customer", {}).get("external_id")
+    try:
+        user_id = data.get("customer", {}).get("external_id")
 
-    if event_type == "subscription.active":
-        product_id = data.get("product_id")
-        plan = product_to_plan(product_id)
-        subscription_id = data.get("id")
-        print(f"✅ ACTIVE  — user={user_id}, plan={plan}, sub_id={subscription_id}")
-        # TODO: await db.update_user_plan(user_id, plan, subscription_id)
+        if event_type == "subscription.active":
+            product_id = data.get("product_id")
+            plan = product_to_plan(product_id)
+            subscription_id = data.get("id")
+            print(f"✅ ACTIVE  — user={user_id}, plan={plan}, sub_id={subscription_id}")
+            # TODO: await db.update_user_plan(user_id, plan, subscription_id)
 
-    elif event_type == "subscription.updated":
-        status = data.get("status")
-        cancel_at_period_end = data.get("cancel_at_period_end", False)
-        print(f"🔄 UPDATED — user={user_id}, status={status}, "
-              f"cancel_at_end={cancel_at_period_end}")
-        # TODO: await db.sync_subscription(user_id, status, cancel_at_period_end)
+        elif event_type == "subscription.updated":
+            status = data.get("status")
+            cancel_at_period_end = data.get("cancel_at_period_end", False)
+            print(f"🔄 UPDATED — user={user_id}, status={status}, "
+                  f"cancel_at_end={cancel_at_period_end}")
+            # TODO: await db.sync_subscription(user_id, status, cancel_at_period_end)
 
-    elif event_type == "subscription.canceled":
-        ends_at = data.get("current_period_end")
-        print(f"⏳ CANCELED — user={user_id}, access until={ends_at}")
-        # TODO: await db.mark_canceling(user_id, ends_at)
+        elif event_type == "subscription.canceled":
+            ends_at = data.get("current_period_end")
+            print(f"⏳ CANCELED — user={user_id}, access until={ends_at}")
+            # TODO: await db.mark_canceling(user_id, ends_at)
 
-    elif event_type == "subscription.revoked":
-        print(f"🚫 REVOKED — user={user_id}")
-        # TODO: await db.revoke_access(user_id)
+        elif event_type == "subscription.revoked":
+            print(f"🚫 REVOKED — user={user_id}")
+            # TODO: await db.revoke_access(user_id)
 
-    elif event_type == "order.created":
-        billing_reason = data.get("billing_reason")
-        if billing_reason == "subscription_cycle":
-            print(f"💰 RENEWED — user={user_id}")
-            # TODO: await db.log_renewal(user_id)
+        elif event_type == "order.created":
+            billing_reason = data.get("billing_reason")
+            if billing_reason == "subscription_cycle":
+                print(f"💰 RENEWED — user={user_id}")
+                # TODO: await db.log_renewal(user_id)
 
-    else:
-        print(f"ℹ️  UNHANDLED EVENT — type={event_type}")
+        else:
+            print(f"ℹ️  UNHANDLED EVENT — type={event_type}")
+            
+    except Exception as e:
+        # Log errors but don't raise them to prevent webhook failures
+        print(f"⚠️ Error processing event {event_type}: {e}")
 
 
 @router.post("/webhook")
 async def polar_webhook(request: Request, background_tasks: BackgroundTasks):
-    body = await request.body()
-    signature = request.headers.get("webhook-signature", "")
+    """
+    Handle Polar webhooks.
+    Always returns 200 to prevent Polar from retrying.
+    """
+    try:
+        body = await request.body()
+        signature = request.headers.get("webhook-signature", "")
 
-    if not verify_signature(body, signature):
-        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+        if not verify_signature(body, signature):
+            print("⚠️ Invalid webhook signature")
+            raise HTTPException(status_code=403, detail="Invalid webhook signature")
 
-    event = await request.json()
-    event_type = event.get("type", "")
-    data = event.get("data", {})
+        event = await request.json()
+        event_type = event.get("type", "")
+        data = event.get("data", {})
 
-    # Acknowledge immediately, process in background
-    # This prevents Polar from timing out and disabling your endpoint
-    background_tasks.add_task(handle_event, event_type, data)
+        # List of events we actively process
+        handled_events = {
+            "subscription.active",
+            "subscription.updated", 
+            "subscription.canceled",
+            "subscription.revoked",
+            "order.created",
+        }
 
-    return {"received": True}
+        if event_type in handled_events:
+            # Process known events in background
+            background_tasks.add_task(handle_event, event_type, data)
+            print(f"✅ Webhook received: {event_type}")
+        else:
+            # Log unhandled events but don't process them
+            print(f"ℹ️  Unhandled Polar event: {event_type}")
+            # Still return 200 so Polar stops retrying
+
+        # Always return 200 so Polar stops retrying
+        return {"received": True, "event_type": event_type}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Log error but still return 200 to prevent retries
+        print(f"⚠️ Webhook processing error: {e}")
+        return {"received": True, "error": str(e)}

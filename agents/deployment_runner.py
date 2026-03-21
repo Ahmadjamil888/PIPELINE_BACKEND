@@ -263,9 +263,18 @@ class DeploymentRunner:
             project_name=service_plan.vercel_config.project_name if service_plan.vercel_config else None
         )
         
+        # Generate branded URL
+        import uuid
+        deployment_id = str(uuid.uuid4())
+        branded_url = f"https://pipeline-labs.vercel.app/deploy/{deployment_id}"
+        
+        # Store mapping in database (you'll need to implement this)
+        # For now, return both URLs
         return {
-            "url": result.get("url"),
-            "platform_id": result.get("deployment_id")
+            "url": branded_url,  # Branded URL
+            "internal_url": result.get("url"),  # Real Vercel URL (hidden)
+            "platform_id": result.get("deployment_id"),
+            "deployment_id": deployment_id
         }
 
     async def _deploy_to_render(
@@ -288,9 +297,18 @@ class DeploymentRunner:
             start_command=service_plan.start_command
         )
         
+        # Generate branded URL
+        import uuid
+        deployment_id = str(uuid.uuid4())
+        branded_url = f"https://pipeline-labs.vercel.app/deploy/{deployment_id}"
+        
+        # Store mapping in database (you'll need to implement this)
+        # For now, return both URLs
         return {
-            "url": result.get("url"),
-            "platform_id": result.get("service_id")
+            "url": branded_url,  # Branded URL
+            "internal_url": result.get("url"),  # Real Render URL (hidden)
+            "platform_id": result.get("service_id"),
+            "deployment_id": deployment_id
         }
 
     async def get_deployment_logs(

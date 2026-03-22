@@ -3,9 +3,9 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 
 # Import routers
 from api.routes import repos, deployments, sandboxes, dashboard, billing, organisations, analysis
@@ -72,35 +72,53 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS - MUST be first middleware
+ALLOWED_ORIGINS = [
+    "https://pipeline-labs.vercel.app",
+    "http://localhost:3000",
+]
+
+# Method 1 — standard middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://pipeline-labs.vercel.app",
-        "http://localhost:3000",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Response sanitization middleware to hide GCP references
-import re
-import json
-
-GCP_PATTERNS = [
-    r"\.run\.app", r"\.googleapis\.com", r"us-central1",
-    r"gcr\.io", r"cloudbuild", r"artifactregistry",
-    r"gke-", r"cloud-build-", r"pkg\.dev",
-    r"projects/[^/]+", r"locations/[^/]+", r"services/[^/]+"
-]
-
+# Method 2 — manual header injection as backup
 @app.middleware("http")
-async def sanitize_responses(request: Request, call_next):
+async def add_cors_headers(request: Request, call_next):
+    origin = request.headers.get("origin", "")
+
+    # Handle preflight
+    if request.method == "OPTIONS":
+        response = JSONResponse(content={}, status_code=200)
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            response.headers["Access-Control-Allow-Headers"] = "*"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+
     response = await call_next(request)
-    
-    # Only sanitize JSON responses
+
+    if origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+
+    # Response sanitization to hide GCP references
     if "application/json" in response.headers.get("content-type", ""):
+        import re
+        GCP_PATTERNS = [
+            r"\.run\.app", r"\.googleapis\.com", r"us-central1",
+            r"gcr\.io", r"cloudbuild", r"artifactregistry",
+            r"gke-", r"cloud-build-", r"pkg\.dev",
+            r"projects/[^/]+", r"locations/[^/]+", r"services/[^/]+"
+        ]
+        
         # Read response body
         body = b""
         async for chunk in response.body_iterator:
@@ -130,160 +148,10 @@ async def sanitize_responses(request: Request, call_next):
                 status_code=response.status_code,
                 headers=dict(response.headers)
             )
-    
+
     return response
 
-
-# Exception handlers
-@app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    """Handle unexpected exceptions."""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "error": "internal_server_error",
-            "message": "An unexpected error occurred"
-        }
-    )
-
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc):
-    """Handle HTTP exceptions."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": exc.status_code,
-            "message": exc.detail
-        }
-    )
-
-
-# Health check endpoint
-@app.get(
-    "/health",
-    response_model=HealthResponse,
-    tags=["System"],
-    summary="Health check",
-    description="Check API health status and service availability"
-)
-async def health_check() -> HealthResponse:
-    """Check system health."""
-    services = {
-        "api": "healthy"
-    }
-    
-    # Check external services
-    if os.getenv("DAYTONA_API_KEY"):
-        services["daytona"] = "healthy"
-    else:
-        services["daytona"] = "unhealthy"
-    
-    if os.getenv("OPENROUTER_API_KEY"):
-        services["ai"] = "healthy"
-    else:
-        services["ai"] = "unhealthy"
-    
-    return HealthResponse(
-        status="healthy" if all(s == "healthy" for s in services.values()) else "degraded",
-        timestamp=datetime.now(),
-        version="1.0.0",
-        services=services
-    )
-
-
-# Custom Swagger UI with constrained CSS
-@app.get("/docs", include_in_schema=False)
-async def custom_swagger_ui():
-    """Custom Swagger UI with CSS to prevent overflow."""
-    return HTMLResponse(content="""
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Pipeline AI DevOps Platform - API Documentation</title>
-    <meta charset="utf-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css" />
-    <style>
-        html { box-sizing: border-box; overflow-x: hidden; }
-        *, *:before, *:after { box-sizing: inherit; }
-        body { 
-            margin: 0; 
-            padding: 0;
-            overflow-x: hidden;
-        }
-        #swagger-ui {
-            max-width: 100vw;
-            overflow-x: hidden;
-        }
-        .swagger-container {
-            max-width: 100%;
-            overflow-x: auto;
-        }
-        .swagger-ui {
-            max-width: 100%;
-        }
-        .swagger-ui .wrapper {
-            max-width: 1460px;
-            width: 100%;
-            padding: 0 20px;
-        }
-        .swagger-ui .opblock {
-            max-width: 100%;
-        }
-        .swagger-ui .opblock .opblock-summary {
-            flex-wrap: wrap;
-        }
-        .swagger-ui .opblock .opblock-summary-method {
-            min-width: 80px;
-        }
-        .swagger-ui table {
-            max-width: 100%;
-            display: block;
-            overflow-x: auto;
-        }
-        .swagger-ui .response-col_description {
-            max-width: 100%;
-            word-wrap: break-word;
-        }
-        .swagger-ui .model-box {
-            max-width: 100%;
-            overflow-x: auto;
-        }
-    </style>
-</head>
-<body>
-    <div id="swagger-ui"></div>
-    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-    <script>
-        window.onload = function() {
-            window.ui = SwaggerUIBundle({
-                url: '/openapi.json',
-                dom_id: '#swagger-ui',
-                deepLinking: true,
-                presets: [
-                    SwaggerUIBundle.presets.apis,
-                    SwaggerUIBundle.presets.standalone
-                ],
-                plugins: [
-                    SwaggerUIBundle.plugins.DownloadUrl
-                ],
-                layout: "BaseLayout",
-                defaultModelsExpandDepth: -1,
-                docExpansion: "list",
-                operationsSorter: "alpha",
-                tagsSorter: "alpha",
-                tryItOutEnabled: true
-            });
-        };
-    </script>
-</body>
-</html>
-    """)
-
-
-# Include routers
+# Routers come AFTER all middleware
 app.include_router(repos.router, prefix="/api/v1")
 app.include_router(deployments.router, prefix="/api/v1")
 app.include_router(sandboxes.router, prefix="/api/v1")
@@ -298,6 +166,42 @@ app.include_router(domains_router, prefix="/api/v1")
 app.include_router(models_router, prefix="/api/v1")
 
 
+# Exception handlers
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    """Handle unexpected exceptions."""
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "error": "internal_server_error",
+            "message": "An unexpected error occurred. Please try again later."
+        }
+    )
+
+@app.exception_handler(status.HTTP_404_NOT_FOUND)
+async def not_found_handler(request, exc):
+    """Handle 404 errors."""
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={
+            "error": "not_found",
+            "message": "The requested resource was not found."
+        }
+    )
+
+@app.exception_handler(status.HTTP_422_UNPROCESSABLE_ENTITY)
+async def validation_exception_handler(request, exc):
+    """Handle validation errors."""
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "validation_error",
+            "message": "Invalid request data."
+        }
+    )
+
+
 # Root endpoint
 @app.get("/")
 async def root():
@@ -306,18 +210,14 @@ async def root():
         "name": "Pipeline AI DevOps Platform",
         "version": "1.0.0",
         "documentation": "https://pipeline.stldocs.app",
-        "health": "/health"
+        "status": "operational"
     }
 
+@app.get("/api/v1/health")
+async def health():
+    return {"status": "healthy", "version": "1.0.0"}
 
-if __name__ == "__main__":
-    import uvicorn
-    
-    # Run development server
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+@app.get("/ping")
+async def ping():
+    """Simple ping endpoint for health checks."""
+    return {"pong": True, "timestamp": datetime.now().isoformat()}

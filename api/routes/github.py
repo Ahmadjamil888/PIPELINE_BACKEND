@@ -235,48 +235,67 @@ async def proxy_github_repos(user_id: str):
     import httpx
     from services.db_service import supabase
     
-    # Get profile from user_id
-    profile_res = supabase.table("profiles")\
-        .select("id")\
-        .eq("user_id", user_id)\
-        .execute()
+    logger.info(f"Fetching repos for user_id: {user_id}")
     
-    if not profile_res.data:
-        raise HTTPException(status_code=401, detail="User not found")
-    
-    profile_id = profile_res.data[0]["id"]
-    
-    # Get token from database
-    token_res = supabase.table("github_tokens")\
-        .select("access_token_encrypted")\
-        .eq("profile_id", profile_id)\
-        .execute()
-    
-    if not token_res.data:
-        raise HTTPException(status_code=401, detail="GitHub not connected")
-    
-    access_token = token_res.data[0]["access_token_encrypted"]
+    # Check if Supabase is available
+    if not supabase:
+        logger.error("Supabase not configured")
+        raise HTTPException(status_code=503, detail="Database service unavailable")
     
     try:
+        # Get profile from user_id
+        profile_res = supabase.table("profiles")\
+            .select("id")\
+            .eq("user_id", user_id)\
+            .execute()
+        
+        if not profile_res.data:
+            logger.error(f"Profile not found for user_id: {user_id}")
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        profile_id = profile_res.data[0]["id"]
+        logger.info(f"Found profile_id: {profile_id}")
+        
+        # Get token from database
+        token_res = supabase.table("github_tokens")\
+            .select("access_token")\
+            .eq("profile_id", profile_id)\
+            .execute()
+        
+        if not token_res.data:
+            logger.error(f"No GitHub token found for profile_id: {profile_id}")
+            raise HTTPException(status_code=401, detail="GitHub not connected")
+        
+        access_token = token_res.data[0]["access_token"]
+        logger.info("Found GitHub access token")
+        
+        # Fetch repositories from GitHub
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                "https://api.github.com/user/repos?sort=updated&per_page=100",
+                "https://api.github.com/user/repos",
                 headers={
                     "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/vnd.github.v3+json"
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "Pipeline-AI-App"
                 }
             )
             
             if response.status_code != 200:
+                logger.error(f"GitHub API error: {response.status_code} - {response.text}")
                 raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"GitHub API error: {response.text}"
+                    status_code=response.status_code, 
+                    detail="Failed to fetch repositories from GitHub"
                 )
             
-            return response.json()
-    except httpx.HTTPError as e:
-        logger.error(f"GitHub API request failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch GitHub repositories")
+            repos = response.json()
+            logger.info(f"Successfully fetched {len(repos)} repositories")
+            return repos
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in proxy_github_repos: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 async def get_installation_token(installation_id: int) -> str:

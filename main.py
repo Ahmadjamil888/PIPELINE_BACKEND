@@ -215,7 +215,24 @@ async def root():
 
 @app.get("/api/v1/health")
 async def health():
-    return {"status": "healthy", "version": "1.0.0"}
+    from services.db_service import check_supabase_connection
+    
+    # Check Supabase connection
+    supabase_status = "disconnected"
+    try:
+        if check_supabase_connection():
+            supabase_status = "connected"
+    except Exception as e:
+        logger.error(f"Health check - Supabase error: {e}")
+        supabase_status = "error"
+    
+    return {
+        "status": "healthy", 
+        "version": "1.0.0",
+        "services": {
+            "supabase": supabase_status
+        }
+    }
 
 @app.get("/ping")
 async def ping():

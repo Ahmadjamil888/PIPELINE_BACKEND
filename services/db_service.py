@@ -5,6 +5,7 @@ Handles all database operations for the Pipeline AI system.
 import os
 import logging
 from datetime import datetime
+from typing import Optional, Dict, Any, List
 from supabase import create_client
 
 logger = logging.getLogger(__name__)
@@ -12,11 +13,33 @@ logger = logging.getLogger(__name__)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
-# Initialize Supabase client
-supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY) if SUPABASE_URL and SUPABASE_SERVICE_KEY else None
+# Initialize Supabase client with better error handling
+try:
+    if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+        logger.info("Supabase client initialized successfully")
+    else:
+        supabase = None
+        logger.error("Supabase not configured - missing URL or service key")
+except Exception as e:
+    supabase = None
+    logger.error(f"Failed to initialize Supabase client: {e}")
 
 
-async def get_user_by_github_username(github_username: str) -> dict | None:
+def check_supabase_connection() -> bool:
+    """Check if Supabase connection is working."""
+    if not supabase:
+        return False
+    try:
+        # Test connection with a simple query
+        result = supabase.table("profiles").select("id").limit(1).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase connection test failed: {e}")
+        return False
+
+
+async def get_user_by_github_username(github_username: str) -> Optional[Dict]:
     """Find user by GitHub username."""
     if not supabase:
         logger.error("Supabase not configured")
@@ -27,16 +50,23 @@ async def get_user_by_github_username(github_username: str) -> dict | None:
             .select("*")\
             .eq("github_username", github_username)\
             .execute()
-        return res.data[0] if res.data else None
+        
+        if res.data:
+            logger.info(f"Found user for GitHub username: {github_username}")
+            return res.data[0]
+        else:
+            logger.info(f"No user found for GitHub username: {github_username}")
+            return None
     except Exception as e:
-        logger.error(f"Error fetching user: {e}")
+        logger.error(f"Error getting user by GitHub username {github_username}: {e}")
         return None
 
 
-async def create_project(owner_id: str, repo_url: str, repo_id: int, name: str) -> dict:
+async def create_project(owner_id: str, repo_url: str, repo_id: int, name: str) -> Optional[Dict]:
     """Create a new project in the database."""
     if not supabase:
-        raise ValueError("Supabase not configured")
+        logger.error("Supabase not configured")
+        return None
     
     try:
         res = supabase.table("projects").insert({
@@ -49,25 +79,39 @@ async def create_project(owner_id: str, repo_url: str, repo_id: int, name: str) 
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat(),
         }).execute()
-        return res.data[0]
+        
+        if res.data:
+            logger.info(f"Created project: {name} for owner: {owner_id}")
+            return res.data[0]
+        else:
+            logger.error(f"Failed to create project: {name}")
+            return None
     except Exception as e:
-        logger.error(f"Error creating project: {e}")
-        raise
+        logger.error(f"Error creating project {name}: {e}")
+        return None
 
 
-async def update_project_status(project_id: str, status: str):
+async def update_project_status(project_id: str, status: str) -> bool:
     """Update project status."""
     if not supabase:
         logger.error("Supabase not configured")
-        return
+        return False
     
     try:
-        supabase.table("projects").update({
+        res = supabase.table("projects").update({
             "status": status,
             "updated_at": datetime.utcnow().isoformat(),
         }).eq("id", project_id).execute()
+        
+        if res.data:
+            logger.info(f"Updated project {project_id} status to: {status}")
+            return True
+        else:
+            logger.error(f"Failed to update project {project_id} status")
+            return False
     except Exception as e:
-        logger.error(f"Error updating project status: {e}")
+        logger.error(f"Error updating project status {project_id}: {e}")
+        return False
 
 
 async def save_analysis_result(project_id: str, scan_result: dict, analysis_results: list):
